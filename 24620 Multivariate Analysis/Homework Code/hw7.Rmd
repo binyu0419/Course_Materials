@@ -1,0 +1,218 @@
+---
+title: "hw7"
+author: "Bin Yu"
+date: "2025-05-19"
+output: html_document
+---
+#Q1
+```{r}
+rm(list=ls())
+# Set seed for reproducibility
+set.seed(42)
+
+x1 <- rnorm(30)
+x2 <- x1 + rnorm(30, sd = 0.01)
+Y  <- rnorm(30, mean = 3 + x1 + x2)
+
+ls_model <- lm(Y ~ x1 + x2)
+summary(ls_model)
+
+```
+```{r}
+# Assuming x1, x2, Y, and ls_model are already in your workspace:
+
+# 1. RSS of the fitted LS model
+rss_ls <- sum(resid(ls_model)^2)
+
+# 2. RSS of the true model (using true β0=3, β1=1, β2=1)
+y_hat_true <- 3 + 1 * x1 + 1 * x2
+rss_true <- sum((Y - y_hat_true)^2)
+
+# Print results
+rss_ls
+rss_true
+```
+
+```{r}
+# Load MASS package for ridge regression
+library(MASS)
+
+# Fit Ridge regression with λ = 1
+ridge_model <- lm.ridge(Y ~ x1 + x2, lambda = 1)
+coef(ridge_model)
+
+```
+
+```{r}
+rm(list=ls())
+library(MASS)
+library(glmnet)
+
+# Split data into training (first 300) and calibration (remaining 206)
+Tdata <- Boston[1:300, ]
+Cdata <- Boston[301:506, ]
+
+# Prepare design matrices and response vectors
+X_train <- as.matrix(Tdata[, 1:13])
+Y_train <- Tdata[, 14]
+
+X_cal   <- as.matrix(Cdata[, 1:13])
+Y_cal   <- Cdata[, 14]
+
+# Fit LASSO with 10‐fold cross‐validation on the training set
+set.seed(42)
+cv_lasso <- cv.glmnet(
+  X_train, Y_train
+)
+
+plot(cv_lasso)
+
+lambda_min <- cv_lasso$lambda.min
+lambda_1se <- cv_lasso$lambda.1se
+
+print(lambda_min)
+print(lambda_1se)
+# Coefficients at λ_min and at λ_1se
+coef_min <- coef(cv_lasso, s = "lambda.min")
+coef_1se <- coef(cv_lasso, s = "lambda.1se")
+
+print(coef_min)
+print(coef_1se)
+
+# Predict on calibration set using λ_min
+Y_pred <- predict(cv_lasso, s = lambda_min, newx = X_cal)
+
+# Compute calibration MSE
+mse_cal <- mean((Y_cal - Y_pred)^2)
+cat("Calibration MSE at λ_min:", round(mse_cal, 4), "\n")
+
+Y_pred_1se <- predict(cv_lasso, s = lambda_1se, newx = X_cal)
+
+# Compute calibration MSE
+mse_1se <- mean((Y_cal - Y_pred_1se)^2)
+cat("Calibration MSE at λ_1se:", round(mse_1se, 4), "\n")
+```
+```{r}
+df_train <- as.data.frame(Tdata)
+ols_model <- lm(medv ~ ., data = df_train)
+
+ols_coefs <- coef(ols_model)
+print(ols_coefs)
+
+df_cal <- as.data.frame(Cdata)
+Y_pred_ols <- predict(ols_model, newdata = df_cal)
+
+mse_ols <- mean((Y_cal - Y_pred_ols)^2)
+cat("Calibration MSE (OLS):", round(mse_ols, 4), "\n")
+
+cat("Calibration MSE (LASSO, lambda.min):", round(mse_cal, 4), "\n")
+cat("Calibration MSE (LASSO, lambda.1se):", round(mse_1se, 4), "\n")
+
+```
+
+
+```{r}
+# Load data
+data <- read.csv("/Users/yubin/Desktop/Multivariate Analysis/hearlossData.csv", header = FALSE)
+colnames(data) <- c("Left5c", "Left1k", "Left2k", "Left4k",
+                    "Right5c", "Right1k", "Right2k", "Right4k")
+
+# Conduct PCA (center and scale variables)
+pca_hearloss <- prcomp(data, center = TRUE, scale. = TRUE)
+
+# Summarize results
+summary(pca_hearloss)
+
+# View loadings (principal component directions)
+print(pca_hearloss$rotation)
+
+# Scree plot of variances
+screeplot(pca_hearloss, type = "lines", main = "Scree Plot for Hearloss Data")
+
+```
+```{r}
+library(elasticnet)
+# Center and scale
+X <- scale(data)
+
+# Perform sparse PCA:
+#   K = number of sparse components to extract
+#   type="predictor" imposes sparsity on the loadings
+#   sparse="varnum" uses a fixed number of nonzero loadings per component
+#   para = c(n1, n2) sets # of nonzero loadings for PC1 and PC2
+spca.res <- spca(X, 
+                 K      = 2, 
+                 type   = "predictor", 
+                 sparse = "varnum", 
+                 para   = c(3, 3))  # keep 3 nonzero loadings in each component
+
+# Inspect sparse loadings
+print(spca.res$loadings)
+
+scores <- X %*% spca.res$loadings
+p <- ncol(X)
+var_scores <- apply(scores, 2, var)
+pve <- var_scores / p
+print(pve)
+
+```
+
+```{r}
+
+rm(list=ls())
+
+X <- read.table("/Users/yubin/Desktop/Multivariate Analysis/tableICA")  # or header=FALSE if no header
+
+# 2. Perform PCA (center and scale)
+pca_res <- prcomp(X, center = TRUE, scale. = TRUE)
+
+print(pca_res$rotation)
+# 3. Scree plot of variances
+screeplot(pca_res, type = "barplot", main = "Scree Plot of PCA on tableICA")
+
+# 4. Project observations onto first two PCs
+scores <- pca_res$x[, 1:2]
+
+# 5. Plot the observations in PC1–PC2 space
+plot(scores,
+     xlab = "PC1",
+     ylab = "PC2",
+     main = "Observations in First Two Principal Components",
+     pch = 19,
+     col = "blue")
+abline(h = 0, v = 0, lty = 2, col = "gray")
+
+```
+```{r}
+library(fastICA)
+set.seed(42)
+ica_res <- fastICA(X, n.comp = 3)
+
+# 3. Extract the estimated source signals (independent components)
+S <- ica_res$S   # an n × 3 matrix of IC scores
+
+# 4. Plot the three recovered ICs as time/observation series
+par(mfrow = c(3,1), mar = c(4,4,2,1))
+plot(S[,1], type = "l", main = "ICA Component 1", xlab = "Obs", ylab = "IC1")
+plot(S[,2], type = "l", main = "ICA Component 2", xlab = "Obs", ylab = "IC2")
+plot(S[,3], type = "l", main = "ICA Component 3", xlab = "Obs", ylab = "IC3")
+
+```
+```{r}
+
+# Extract the first three principal component scores
+PC_scores <- pca_res$x[, 1:3]
+
+# Plot the first three PCs in a stacked time‐series layout
+par(mfrow = c(3,1), mar = c(4,4,2,1))
+plot(PC_scores[,1], type = "l",
+     main = "PCA Component 1",
+     xlab = "Obs", ylab = "PC1")
+plot(PC_scores[,2], type = "l",
+     main = "PCA Component 2",
+     xlab = "Obs", ylab = "PC2")
+plot(PC_scores[,3], type = "l",
+     main = "PCA Component 3",
+     xlab = "Obs", ylab = "PC3")
+```
+

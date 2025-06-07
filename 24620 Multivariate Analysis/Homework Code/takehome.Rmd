@@ -1,0 +1,152 @@
+---
+title: "th"
+author: "Bin Yu"
+date: "2025-05-23"
+output: html_document
+---
+```{r}
+rm(list=ls())
+set.seed(2025)
+
+Prostate = read.table("/Users/yubin/Desktop/Multivariate Analysis/pcancer.dat", header=T)
+library(MASS)
+library(glmnet)
+
+Y=as.numeric(Prostate[,9])
+X=as.matrix(Prostate[,1:8])
+lassofit = glmnet(X,Y,alpha=1)
+
+plot(lassofit,label=T, xvar="lambda")
+
+cvfit=cv.glmnet(X,Y,alpha=1)
+
+cvfit$lambda.min
+cvfit$lambda.1se
+coef(cvfit,s="lambda.1se")
+
+# (b) Ridge regression (alpha = 0)
+ridgefit <- glmnet(X, Y, alpha = 0)
+
+plot(ridgefit, xvar = "lambda", label = TRUE)
+title("Ridge Coefficient")
+
+cvfit_ridge <- cv.glmnet(X, Y, alpha = 0)
+
+cvfit_ridge$lambda.min
+cvfit_ridge$lambda.1se
+coef(cvfit_ridge,s="lambda.1se")
+# (c) Elastic Net regression (alpha = 0.4)
+
+enfit <- glmnet(X, Y, alpha = 0.4)
+
+plot(enfit, xvar = "lambda", label = TRUE)
+title("Elastic Net (α = 0.4) Coefficient Paths")
+
+cv_en <- cv.glmnet(X, Y, alpha = 0.4)
+cv_en$lambda.min
+cv_en$lambda.1se
+coef(cv_en,s="lambda.1se")
+
+cor_mat <- cor(X)
+print(round(cor_mat, 2))
+
+
+mse_lasso  <- cvfit$cvm
+lam_lasso  <- cvfit$lambda
+
+mse_ridge  <- cvfit_ridge$cvm
+lam_ridge  <- cvfit_ridge$lambda
+
+mse_en     <- cv_en$cvm
+lam_en     <- cv_en$lambda
+
+
+idx_l_1se  <- which(lam_lasso == cvfit$lambda.1se)
+idx_r_1se  <- which(lam_ridge == cvfit_ridge$lambda.1se)
+idx_en_1se <- which(lam_en == cv_en$lambda.1se)
+
+cat("LASSO MSE at lambda.1se =", mse_lasso[idx_l_1se], "\n\n")
+cat("Ridge MSE at lambda.1se =", mse_ridge[idx_r_1se], "\n\n")
+cat("EN MSE at lambda.1se =",     mse_en[idx_en_1se],     "\n\n")
+
+plot(log(lam_lasso), mse_lasso, type = "l", lwd = 2,
+     xlab = "log(lambda)", ylab = "CV MSE",
+     main = "CV MSE: LASSO vs Ridge vs Elastic Net")
+lines(log(lam_ridge), mse_ridge, lwd = 2, lty = 2)
+lines(log(lam_en),     mse_en,     lwd = 2, lty = 3)
+legend("topright",
+       legend = c("LASSO", "Ridge", "Elastic Net"),
+       lty    = c(1, 2, 3),
+       lwd    = c(2, 2, 2))
+```
+```{r}
+# (a) Regression Tree with CV‐based size selection
+
+library(MASS)
+library(tree)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+
+set.seed(2025) 
+n <- nrow(Prostate)
+
+test  <- sample(1:n, size = (n/3))
+train <- setdiff(1:n, test)
+
+tree_full <- tree(
+  lpsa ~ lcavol + lweight + age + lbph + svi + lcp + gleason + pgg45,
+  data   = Prostate,
+  subset = train
+)
+
+plot(tree_full)
+text(tree_full,cex=0.7,digits=2)
+
+cv_res <- cv.tree(tree_full)
+plot(cv_res$size, cv_res$dev, type="b",
+     xlab="Tree size (# terminal nodes)",
+     ylab="CV deviance")
+
+tree_pruned <- prune.tree(tree_full, best = 4)
+plot(tree_pruned)
+text(tree_pruned,cex=0.7,digits=2)
+
+tree_pruned_10 <- prune.tree(tree_full, best = 10)
+plot(tree_pruned_10)
+text(tree_pruned_10,cex=0.7,digits=2)
+
+yhat=predict(tree_pruned,newdata=Prostate[-train,]) 
+test=Prostate[-train,"lpsa"]
+
+mean((yhat-test)^2)
+
+yhat=predict(tree_pruned_10,newdata=Prostate[-train,]) 
+test=Prostate[-train,"lpsa"]
+
+mean((yhat-test)^2)
+```
+
+
+```{r}
+set.seed(2025)
+rf_mod <- randomForest(
+  lpsa ~ lcavol + lweight + age + lbph + svi + lcp + gleason + pgg45,
+  data     = Prostate,
+  subset   = train,    
+  mtry     = 7,            
+  ntree    = 1000,         
+)
+
+yhat = predict(rf_mod,newdata=Prostate[-train,])
+
+mean((yhat-test)^2)
+
+print(rf_mod)
+
+imp <- importance(rf_mod)
+print(imp)
+varImpPlot(rf_mod)
+```
+
+

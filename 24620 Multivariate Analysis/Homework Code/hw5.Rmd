@@ -1,0 +1,746 @@
+---
+title: "Untitled"
+author: "Bin Yu"
+date: "2025-05-05"
+output: html_document
+---
+```{r}
+x_train <- c(0.3, 0.5, 0.7)
+y_train <- c(1,   1,   0)
+
+xgrid <- seq(0, 1, length=1001)
+ygrid <- sapply(xgrid, function(x) {
+  d <- abs(x - x_train)
+  idx <- order(d)[1:2]
+  mean(y_train[idx])
+})
+
+plot(xgrid, ygrid, type="s", ylim=c(0,1),
+     xlab="x", ylab=expression(hat(y)[2-NN](x)),
+     main="2-NN Regression Function")
+abline(v=0.5, lty=2, col="gray")  # decision boundary
+points(0.5, 1, pch=19, col="black")# tie‐broken value
+```
+
+```{r}
+rm(list=ls())
+# (c) Sketch f1 and f3, and identify the minimum‐ECM regions
+
+# 1. Define the normalizing constants
+c1 <- 1
+c3 <- 1/4
+
+# 2. Define the densities f1, f3 on a fine grid
+xgrid <- seq(-1.5, 2.5, length=1000)
+f1    <- c1 * (1 - abs(xgrid - 0.5)) * (xgrid >= -0.5 & xgrid <= 1.5)
+f3    <- c3 * (2 - abs(xgrid - 0.5)) * (xgrid >= -1.5 & xgrid <= 2.5)
+
+# 3. Plot f1 and f3
+plot(xgrid, f1, type="l", lwd=2, col="blue",
+     ylim=c(0, max(f1,f3)),
+     xlab="x", ylab="density",
+     main="Densities f1 (blue) and f3 (red)")
+lines(xgrid, f3, lwd=2, col="red")
+legend("topright",
+       legend=c("f1","f3"),
+       col=c("blue","red"),
+       lwd=2,
+       bty="n")
+
+# 4. Compute the ECM decision rule
+p1 <- 0.8; p3 <- 0.2
+# since c(3|1)=c(1|3), compare p1 f1 >= p3 f3
+R1 <- (p1 * f1 >= p3 * f3)
+
+# 5. Shade or mark the region R1 on the x-axis
+rug(xgrid[R1], col="darkgreen", lwd=2)
+
+```
+
+```{r}
+rm(list=ls())
+gsbdata = read.table("/Users/yubin/Desktop/Multivariate Analysis/GpaGmat.DAT.txt")
+colnames(gsbdata)=c("GPA", "GMAT","admit")
+```
+
+```{r}
+group_means <- aggregate(cbind(GPA, GMAT) ~ admit,
+                         data = gsbdata,
+                         FUN  = mean)
+print(group_means)
+
+# Compute overall mean x̄
+overall_mean <- colMeans(gsbdata[, c("GPA", "GMAT")])
+print(overall_mean)
+
+# Check whether overall mean equals (unweighted) average of subgroup means
+unweighted_mean <- colMeans(group_means[, c("GPA", "GMAT")])
+print(unweighted_mean)
+```
+
+
+```{r}
+# Compute pooled covariance S_pool
+# 1. Get group sizes and sample covariances
+ns <- table(gsbdata$admit)
+S_list <- by(gsbdata[, c("GPA","GMAT")],
+             INDICES = gsbdata$admit,
+             FUN     = cov)
+
+# 2. Sum (n_i - 1)*S_i over groups
+S_pool <- Reduce(`+`, Map(function(Si, ni) (ni - 1) * Si,
+                          S_list, ns)) /
+          (sum(ns) - length(ns))
+print(S_pool)
+
+```
+```{r}
+# Assume gsbdata is already loaded and has columns GPA, GMAT, admit
+
+# 1. Compute group means and overall mean
+group_means  <- aggregate(cbind(GPA, GMAT) ~ admit,
+                          data = gsbdata, FUN = mean)
+overall_mean <- colMeans(gsbdata[, c("GPA","GMAT")])
+
+# 2. Within‐group sum of squares and cross‐products matrix W
+# 2. Within‐group sum of squares and cross‐products matrix W
+W <- matrix(0, nrow=2, ncol=2)
+for(g in unique(gsbdata$admit)) {
+  # Extract the numeric matrix of observations in group g
+  Xg_mat <- as.matrix(subset(gsbdata, admit == g)[, c("GPA","GMAT")])
+  
+  # Group mean as a numeric vector of length 2
+  mu <- as.numeric(group_means[group_means$admit == g, c("GPA","GMAT")])
+  
+  # Deviations: each row of Xg_mat minus mu
+  D <- sweep(Xg_mat, 2, mu, FUN = "-")   # now D is a numeric matrix
+  
+  # Accumulate cross‐product
+  W <- W + t(D) %*% D
+}
+
+# Inspect W
+print(W)
+
+# 3. Inverse of W
+W_inv <- solve(W)
+W_inv
+
+# 4. Between‐group sum of squares and cross‐products matrix B
+B <- matrix(0, nrow=2, ncol=2)
+for(g in unique(gsbdata$admit)) {
+  mu  <- as.numeric(group_means[group_means$admit == g, c("GPA","GMAT")])
+  d   <- matrix(mu - overall_mean, ncol=1)
+  B   <- B + (d %*% t(d))
+}
+B
+
+# 5. Eigen‐decomposition of W^{-1} B
+M   <- W_inv %*% B
+eig <- eigen(M)
+lambda_hat <- eig$values
+a_vectors  <- eig$vectors
+
+# 6. Display results
+lambda_hat
+a_vectors
+
+```
+
+```{r}
+A <- a_vectors          # 2×2 matrix
+
+# 2. Project the subgroup means into the discriminant space
+#    mu_mat is 3×2: each row is (GPA, GMAT) for admit=1,2,3 in that order
+mu_mat      <- as.matrix(group_means[, c("GPA","GMAT")])   # (3×2)
+group_proj  <- t(A) %*% t(mu_mat)                          # (2×3)
+
+# 3. Define the two new observations
+x_new   <- matrix(c(3.21, 497,
+                    3.22, 497),
+                  ncol = 2, byrow = TRUE)                 # (2×2)
+
+# 4. Project the new points
+proj_new <- t(A) %*% t(x_new)                              # (2×2)
+
+# 5. Classification rule: assign to the class whose projected mean is closest
+sqdist <- function(z, M) colSums((M - z)^2)  # squared Euclid. dist
+
+predicted_class <- apply(proj_new, 2, function(z) {
+  k <- which.min(sqdist(z, group_proj))    # index of closest group mean
+  group_means$admit[k]                     # admit label (1,2 or 3)
+})
+
+# 6. Combine and display
+results <- data.frame(x1 = x_new[,1],
+                      x2 = x_new[,2],
+                      predicted_class = predicted_class)
+print(results)
+
+```
+
+```{r}
+# 1. Load MASS for lda()
+library(MASS)
+
+# 2. Fit LDA to the three‐class admission data
+fit <- lda(admit ~ GPA + GMAT, data = gsbdata)
+
+# 3. Inspect the components of the fitted object
+names(fit)
+# [1] "prior"   "counts"  "means"   "scaling" "lev"     "svd"
+
+# 4. Extract each component
+fit$prior    # the class‐prior probabilities
+fit$counts   # number of observations in each class
+fit$means    # the class‐specific mean vectors
+fit$scaling  # the linear discriminant coefficients (eigenvectors)
+fit$lev      # the class labels (levels)
+fit$svd      # the singular values (sqrt of eigenvalues)
+
+# 5. Predict on new data if desired
+newdata <- data.frame(GPA=c(3.21,3.22), GMAT=c(497,497))
+pred <- predict(fit, newdata)
+pred$class    # assigned classes
+pred$posterior  # posterior probabilities for each class
+
+```
+
+```{r}
+# Assume gsbdata, group_means and overall_mean (as 1/g sum of group_means) are already computed
+
+# Number of groups
+g <- length(unique(gsbdata$admit))
+
+# 1. Within‐group SSCP W (as before)
+W <- matrix(0, 2, 2)
+for(gid in unique(gsbdata$admit)) {
+  Xg  <- as.matrix(subset(gsbdata, admit==gid)[,c("GPA","GMAT")])
+  mu  <- as.numeric(group_means[group_means$admit==gid, c("GPA","GMAT")])
+  D   <- sweep(Xg, 2, mu, FUN="-")
+  W   <- W + t(D) %*% D
+}
+
+# 2. Inverse of W
+W_inv <- solve(W)
+
+# 3. Between‐group SSCP B using sample‐mean average (unweighted)
+#    First compute sample‐mean average (1/g sum of subgroup means)
+grand_mean_unw <- colMeans(group_means[, c("GPA","GMAT")])
+
+#    Now sum (x̄_i - grand_mean_unw)(x̄_i - grand_mean_unw)'
+B <- matrix(0, 2, 2)
+for(i in seq_len(nrow(group_means))) {
+  mu_i <- as.numeric(group_means[i, c("GPA","GMAT")])
+  d    <- mu_i - grand_mean_unw
+  B    <- B + tcrossprod(d, d)    # same as d %*% t(d)
+}
+
+# 4. Eigen‐decomposition of W^{-1} B
+M    <- W_inv %*% B
+eig  <- eigen(M)
+lambda_hat <- eig$values
+a_vectors  <- eig$vectors
+
+# 5. Print results
+cat("W =\n");        print(W)
+cat("W^{-1} =\n");   print(W_inv)
+cat("B =\n");        print(B)
+cat("Eigenvalues (λ̂):\n");      print(lambda_hat)
+cat("Eigenvectors (columns = a_i):\n"); print(a_vectors)
+
+```
+```{r}
+# --- (0) Pre‐reqs from part (b) -------------------------------------
+# group_means: data.frame with columns (admit, GPA, GMAT), one row per class
+# a_vectors:   2×2 matrix whose columns are the first two eigenvectors
+
+# e.g.
+# > group_means
+#   admit      GPA     GMAT
+# 1     1 3.403871 561.2258
+# 2     2 2.482500 447.0714
+# 3     3 2.992692 446.2308
+#
+# > a_vectors
+#               [,1]         [,2]
+# [1,]  0.999998564 -0.999969462
+# [2,]  0.001694796  0.007815072
+
+# --- 1. Make sure group_means are in class order 1,2,3 --------------
+group_means <- group_means[order(group_means$admit), ]
+
+# --- 2. Form the 2×2 eigenvector matrix A ---------------------------
+A <- a_vectors    # columns are a1 and a2
+
+# --- 3. Build the 3×2 matrix of class means in original space --------
+mu_mat <- as.matrix(group_means[, c("GPA","GMAT")])
+#    row i = mean vector of class i
+
+# --- 4. Project class means into canonical space y = A′ x ------------
+z_means <- mu_mat %*% A  
+#    z_means is 3×2; row i = [y1_i, y2_i] for class i
+
+# --- 5. Define the two new observations -----------------------------
+x_new <- matrix(c(3.21, 497,
+                  3.22, 497),
+                ncol = 2, byrow = TRUE)
+colnames(x_new) <- c("GPA","GMAT")
+
+# --- 6. Project new observations y = A′ x ----------------------------
+z_new <- x_new %*% A  
+#    z_new is 2×2; row j = [y1_j, y2_j] for new point j
+
+# --- 7. Classify by nearest projected‐centroid -----------------------
+# For each new point zj, compute squared distance to each row of z_means
+predicted_class <- apply(z_new, 1, function(zj) {
+  d2 <- rowSums((z_means - matrix(zj, nrow=3, ncol=2, byrow=TRUE))^2)
+  k  <- which.min(d2)              # index of closest class‐mean
+  group_means$admit[k]             # return class label (1,2 or 3)
+})
+
+# --- 8. Output results ------------------------------------------------
+results <- data.frame(
+  GPA   = x_new[,1],
+  GMAT  = x_new[,2],
+  class = predicted_class
+)
+print(results)
+
+```
+```{r}
+# --- 全局缩小文字、点和边距 ---
+op <- par(
+  cex.lab  = 0.9,   # 坐标轴标签
+  cex.axis = 0.8,   # 坐标轴刻度标签
+  cex.main = 1.1,   # 标题
+  cex      = 0.8,   # 默认文字和点
+  mar      = c(4,4,2,2)  # 边距
+)
+on.exit(par(op))  # 保证退出后恢复原始参数
+
+# --- 画投影后的判别平面 ---
+A    <- a_vectors
+X    <- as.matrix(gsbdata[, c("GPA","GMAT")])
+Z    <- X %*% A
+cols <- c("red","blue","green")[gsbdata$admit]
+pchs <- c(16,17,15)[gsbdata$admit]
+
+plot(Z,
+     col   = cols,
+     pch   = pchs,
+     xlab  = "LD1 (first discriminant)",
+     ylab  = "LD2 (second discriminant)",
+     main  = "Gsb Admissions in First Two Discriminants")
+
+# --- 缩小图例 ---
+legend("topright",
+       legend = c("Yes","No","Borderline"),
+       col    = c("red","blue","green"),
+       pch    = c(16,17,15),
+       cex    = 0.7,   # 专门再把图例缩到 70%
+       bty    = "n")
+
+```
+
+
+```{r}
+# 1. Fit LDA using MASS::lda
+library(MASS)
+fit_lda <- lda(admit ~ GPA + GMAT, data = gsbdata)
+
+# 2. Compute LDA scores for all training data
+lda_scores <- predict(fit_lda)$x   # n×2 matrix of LD1, LD2
+
+# 3. Plot the training points in LD1–LD2 space
+cols_train <- c("red","blue","green")[gsbdata$admit]
+pch_train  <- c(16,17,15)[gsbdata$admit]
+
+plot(lda_scores,
+     col   = cols_train,
+     pch   = pch_train,
+     xlab  = "LDA1",
+     ylab  = "LDA2",
+     main  = "LDA: First Two Discriminants")
+legend("topright",
+       legend = c("Yes","No","Borderline"),
+       col    = c("red","blue","green"),
+       pch    = c(16,17,15),
+       bty    = "n")
+
+# 4. Define and classify the new observations
+newdata <- data.frame(
+  GPA  = c(3.21, 3.22),
+  GMAT = c(497,   497)
+)
+pred <- predict(fit_lda, newdata)
+
+# 5. Plot the new observations on the same LDA plot
+cols_new <- c("red","blue","green")[pred$class]
+points(pred$x,
+       pch = 8,
+       col = cols_new,
+       cex = 1.5)
+
+# 6. Label each new point with its coordinates and predicted class
+labels_new <- paste0("(", newdata$GPA, ",", newdata$GMAT, ")\n→", pred$class)
+text(pred$x,
+     labels = labels_new,
+     pos    = 3,
+     col    = cols_new,
+     cex    = 0.8)
+
+```
+```{r}
+# --- 全局缩小文字、点和边距 ---
+op <- par(
+  cex.lab  = 0.9,   # 坐标轴标签
+  cex.axis = 0.8,   # 坐标轴刻度标签
+  cex.main = 1.1,   # 标题
+  cex      = 0.8,   # 默认文字和点
+  mar      = c(4,4,2,2)  # 边距
+)
+on.exit(par(op))  # 退出后恢复参数
+
+# --- 画投影后的判别平面 ---
+A    <- a_vectors
+X    <- as.matrix(gsbdata[, c("GPA","GMAT")])
+Z    <- X %*% A
+cols <- c("red","blue","green")[gsbdata$admit]
+pchs <- c(16,17,15)[gsbdata$admit]
+
+plot(Z,
+     col   = cols,
+     pch   = pchs,
+     xlab  = "LD1 (first discriminant)",
+     ylab  = "LD2 (second discriminant)",
+     main  = "Gsb Admissions in First Two Discriminants")
+
+# --- 缩小图例 ---
+legend("topright",
+       legend = c("Yes","No","Borderline"),
+       col    = c("red","blue","green"),
+       pch    = c(16,17,15),
+       cex    = 0.7,   # 图例再缩到 70%
+       bty    = "n")
+
+# --- (c) 投影并分类两条新观测 ---
+new_pts <- data.frame(
+  GPA  = c(3.21, 3.22),
+  GMAT = c(497,   497)
+)
+
+# 计算投影后的新观测坐标
+z_new <- as.matrix(new_pts) %*% A  # 2×2
+
+# 计算各类均值的投影
+mu_mat   <- as.matrix(group_means[order(group_means$admit), c("GPA","GMAT")])
+z_means  <- mu_mat %*% A            # 3×2
+
+# 最近投影中心分类
+predicted <- apply(z_new, 1, function(zj) {
+  d2 <- rowSums((z_means - matrix(zj, nrow=3, ncol=2, byrow=TRUE))^2)
+  group_means$admit[which.min(d2)]
+})
+
+# 按预测类别着色并画出新观测
+cols_new <- c("red","blue","green")[predicted]
+points(z_new, pch=8, col=cols_new, cex=1.2)
+text(z_new,
+     labels = paste0("(", new_pts$GPA, ",", new_pts$GMAT, ")\n→", predicted),
+     pos    = 3,
+     col    = cols_new,
+     cex    = 0.7)
+
+```
+
+
+```{r}
+rm(list=ls())
+
+X1 = cbind(c(3,2,4),c(7,4,7))
+X2=cbind(c(6,5,4),c(9,7,8))
+mu1 = colMeans(X1)
+mu2 = colMeans(X2)
+S1=cov(X1)
+S2=cov(X2)
+```
+
+```{r}
+n1 <- nrow(X1)
+n2 <- nrow(X2)
+Sp <- ((n1-1)*S1 + (n2-1)*S2) / (n1+n2-2)
+```
+
+```{r}
+# 1. Input the two classes
+X1 <- matrix(c(3,2,4,
+               7,4,7),
+             ncol = 2, byrow = FALSE)
+X2 <- matrix(c(6,5,4,
+               9,7,8),
+             ncol = 2, byrow = FALSE)
+
+# 2. Compute class means and pooled covariance
+mu1 <- colMeans(X1)
+mu2 <- colMeans(X2)
+S1  <- cov(X1)
+S2  <- cov(X2)
+n1 <- nrow(X1)
+n2 <- nrow(X2)
+Sp <- ((n1 - 1)*S1 + (n2 - 1)*S2) / (n1 + n2 - 2)
+
+# 3. LDA coefficients: w' x = m
+w <- solve(Sp) %*% (mu1 - mu2)          # weight vector
+m <- 0.5 * t(mu1 - mu2) %*% solve(Sp) %*% (mu1 + mu2)  # threshold
+
+# 4. Base scatter plot
+plot(X1, col='red', pch=16, xlim=c(1,8), ylim=c(2,10),
+     xlab=expression(x[1]), ylab=expression(x[2]),
+     main='LDA Boundary with New Observations')
+points(X2, col='blue', pch=17)
+legend('topright',
+       legend=c('Class 1','Class 2','New Obs'),
+       pch=c(16,17,8), col=c('red','blue','black'))
+
+# 5. Plot the LDA decision boundary: w[1]*x + w[2]*y = m
+if (abs(w[2]) > 1e-6) {
+  abline(a = m/w[2], b = -w[1]/w[2], col='darkgreen', lwd=2)
+} else {
+  abline(v = m/w[1], col='darkgreen', lwd=2)
+}
+
+# 6. Add the two new points
+new_pts <- rbind(c(4.1, 5), c(3.9, 9))
+points(new_pts, pch=8, col='black', cex=1.5)
+```
+
+```{r}
+# After your existing plot and legend calls, add the SVM boundary x1 + x2 = 11.5:
+
+# Plot the base scatter
+plot(X1, col='red', pch=16, xlim=c(1,8), ylim=c(2,10),
+     xlab=expression(x[1]), ylab=expression(x[2]),
+     main='SVM Boundary')
+points(X2, col='blue', pch=17)
+legend('topright',
+       legend=c('Class 1','Class 2'),
+       pch=c(16,17,8), col=c('red','blue'))
+# Add the SVM decision boundary: x1 + x2 = 11.5
+# Rearranged as x2 = −x1 + 11.5
+abline(a = 11.5, b = -1, col = "darkgreen", lwd = 2)
+
+# Optionally label the boundary
+text(x = 2, y = 9.5,
+     labels = "x1 + x2 = 11.5",
+     col    = "darkgreen",
+     adj    = c(0,0),
+     cex    = 1.1)
+
+```
+```{r}
+# 1. Base scatter plot
+plot(X1, col='red', pch=16, xlim=c(1,8), ylim=c(2,10),
+     xlab=expression(x[1]), ylab=expression(x[2]),
+     main='SVM Boundary & New Observations')
+points(X2, col='blue', pch=17)
+
+# 2. Add the SVM decision boundary x1 + x2 = 11.5
+abline(a = 11.5, b = -1, col = "darkgreen", lwd = 2)
+text(x = 2, y = 9.5,
+     labels  = c("SVM"),
+     col    = "darkgreen",
+     adj    = c(0,0),
+     cex    = 1.1)
+
+# 3. Add the two new observations
+new_pts <- data.frame(x1 = c(4.1, 3.9),
+                      x2 = c(5,   9  ))
+points(new_pts$x1, new_pts$x2,
+       pch = 3,
+       col = 'black',
+       cex = 1.5)
+
+# 4. Label each new observation
+text(new_pts$x1, new_pts$x2,
+     labels = c("(4.1,5)", "(3.9,9)"),
+     pos    = 3,
+     col    = 'black',
+     cex    = 0.9)
+
+# 5. Updated legend including New Observations
+legend('topright',
+       legend = c('Class 1','Class 2','New Obs'),
+       pch    = c(16,       17,        8),
+       col    = c('red',    'blue',    'black'),
+       bty    = 'n')
+
+
+```
+```{r}
+# 1. Define the integer‐scaled QDA discriminant function d3(x1, x2)
+d3 <- function(x1, x2) {
+  # 3 * d(x) = -4*x1^2 + 4*x1*x2 - 4*x1 - 16*x2 + 80
+  -4*x1^2 + 4*x1*x2 - 4*x1 - 16*x2 + 80
+}
+
+# 2. Base scatter plot
+plot(X1, col='red', pch=16, xlim=c(1,8), ylim=c(2,10),
+     xlab=expression(x[1]), ylab=expression(x[2]),
+     main='QDA Boundary')
+points(X2, col='blue', pch=17)
+legend('topright',
+       legend=c('Class 1','Class 2'),
+       pch=c(16,17),
+       col=c('red','blue'),
+       bty='n')
+
+# 3. Overlay the QDA decision boundary d3(x1,x2)=0
+x1.seq <- seq(1, 8, length=300)
+x2.seq <- seq(2, 10, length=300)
+z <- outer(x1.seq, x2.seq, Vectorize(d3))
+contour(x1.seq, x2.seq, z,
+        levels=0, drawlabels=FALSE,
+        add=TRUE, col='purple', lwd=2)
+
+```
+
+```{r}
+# 1. Define the integer‐scaled QDA discriminant function d3(x1, x2)
+d3 <- function(x1, x2) {
+  -4*x1^2 + 4*x1*x2 - 4*x1 - 16*x2 + 80
+}
+
+# 2. Compute new points and their QDA classification
+new_pts <- data.frame(
+  x1 = c(4.1, 3.9),
+  x2 = c(5,   9  )
+)
+new_pts$class <- ifelse(d3(new_pts$x1, new_pts$x2) > 0,
+                        "Class 1", "Class 2")
+
+# 3. Shrink text and point sizes globally
+op <- par(cex.lab=0.9,    # axis labels
+          cex.axis=0.8,   # axis tick labels
+          cex.main=1.1,   # title
+          cex=0.8,        # default text/points
+          mar=c(4,4,2,2)) # margins
+on.exit(par(op))
+
+# 4. Base scatter plot
+plot(X1, col='red', pch=16, cex=1.2,
+     xlim=c(1,8), ylim=c(2,10),
+     xlab=expression(x[1]), ylab=expression(x[2]),
+     main='QDA Boundary & New Observations')
+points(X2, col='blue', pch=17, cex=1.2)
+
+# 5. Add the QDA boundary contour at level=0
+x1.seq <- seq(1, 8, length=300)
+x2.seq <- seq(2, 10, length=300)
+z <- outer(x1.seq, x2.seq, Vectorize(d3))
+contour(x1.seq, x2.seq, z, levels=0, drawlabels=FALSE,
+        add=TRUE, col='purple', lwd=1.5)
+
+# 6. Add new observations (smaller symbols)
+cols_new <- c("Class 1"="red","Class 2"="blue")
+points(new_pts$x1, new_pts$x2,
+       pch=8, col=cols_new[new_pts$class], cex=1.5)
+text(new_pts$x1, new_pts$x2,
+     labels=paste0("(",new_pts$x1,",",new_pts$x2,")"),
+     pos=3, col=cols_new[new_pts$class], cex=0.8)
+
+# 7. Legend in top‐right inside plot, smaller size
+legend("topright",
+       legend = c("Class 1","Class 2","New Obs → C1","New Obs → C2"),
+       col    = c("red","blue","red","blue"),
+       pch    = c(16,17,8,8),
+       pt.cex = c(1,1,1.5,1.5),
+       cex    = 0.8,
+       inset  = c(0.02,0.02),
+       bty    = "n")
+
+```
+
+
+```{r}
+# Assume we have already defined X1, X2, and d3() as before, 
+# and have drawn the QDA boundary and A, B. Now:
+
+# 1. Define the integer‐scaled QDA discriminant function d3(x1, x2)
+d3 <- function(x1, x2) {
+  -4*x1^2 + 4*x1*x2 - 4*x1 - 16*x2 + 80
+}
+
+# 2. Compute new points and their QDA classification
+new_pts <- data.frame(
+  x1 = c(4.1, 3.9),
+  x2 = c(5,   9  )
+)
+new_pts$class <- ifelse(d3(new_pts$x1, new_pts$x2) > 0,
+                        "Class 1", "Class 2")
+
+# 3. Shrink text and point sizes globally
+op <- par(cex.lab=0.9,    # axis labels
+          cex.axis=0.8,   # axis tick labels
+          cex.main=1.1,   # title
+          cex=0.8,        # default text/points
+          mar=c(4,4,2,2)) # margins
+on.exit(par(op))
+
+# 4. Base scatter plot
+plot(X1, col='red', pch=16, cex=1.2,
+     xlim=c(1,8), ylim=c(2,10),
+     xlab=expression(x[1]), ylab=expression(x[2]),
+     main='QDA Boundary & New Observations')
+points(X2, col='blue', pch=17, cex=1.2)
+
+# 5. Add the QDA boundary contour at level=0
+x1.seq <- seq(1, 8, length=300)
+x2.seq <- seq(2, 10, length=300)
+z <- outer(x1.seq, x2.seq, Vectorize(d3))
+contour(x1.seq, x2.seq, z, levels=0, drawlabels=FALSE,
+        add=TRUE, col='purple', lwd=1.5)
+
+# 6. Add new observations (smaller symbols)
+cols_new <- c("Class 1"="red","Class 2"="blue")
+points(new_pts$x1, new_pts$x2,
+       pch=8, col=cols_new[new_pts$class], cex=1.5)
+text(new_pts$x1, new_pts$x2,
+     labels=paste0("(",new_pts$x1,",",new_pts$x2,")"),
+     pos=3, col=cols_new[new_pts$class], cex=0.8)
+
+# 7. Legend in top‐right inside plot, smaller size
+legend("topright",
+       legend = c("Class 1","Class 2","New Obs → C1","New Obs → C2"),
+       col    = c("red","blue","red","blue"),
+       pch    = c(16,17,8,8),
+       pt.cex = c(1,1,1.5,1.5),
+       cex    = 0.8,
+       inset  = c(0.02,0.02),
+       bty    = "n")
+
+# 1. Define the third new observation
+C <- data.frame(x1 = 4.1, x2 = 9.5)
+
+# 2. Classify C by the sign of d3()
+C$class <- ifelse(d3(C$x1, C$x2) > 0, "Class 1", "Class 2")
+print(C)
+#    x1  x2   class
+# 1 4.1 9.5 Class 1
+
+# 3. Add C to the existing plot
+points(C$x1, C$x2, pch = 8, col = ifelse(C$class=="Class 1","red","blue"), cex = 1.5)
+text(C$x1, C$x2, labels = "(4.1,9.5)", pos = 3, col = ifelse(C$class=="Class 1","red","blue"), cex = 0.9)
+
+# 4. Interpret
+cat("Observation (4.1, 9.5) is classified into", C$class, "\n")
+# => Observation (4.1, 9.5) is classified into Class 1
+
+# 5. Reasonableness
+# Since (4.1,9.5) lies above the hyperbolic QDA boundary (d3=0), 
+# it falls into the region assigned to population 1. 
+# Visually this agrees with the pattern of the quadratic regions, 
+# so the classification is quite reasonable.
+
+```
+
