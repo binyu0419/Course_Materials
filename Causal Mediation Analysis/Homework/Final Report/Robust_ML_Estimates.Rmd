@@ -1,0 +1,986 @@
+---
+title: "Robust ML estimate"
+author: "Bin Yu"
+date: "2025-05-25"
+output: html_document
+---
+
+# Data loading
+```{r}
+rm(list = ls())
+library(survey)
+library(gbm)
+library(ranger)
+library(glmnet)
+library(rsample)
+library(caret)
+library(rlang)
+library(tidyverse)
+library(Hmisc)
+library(SuperLearner)
+source("zmisc.R")
+
+
+vars_to_keep <- c("exp4_binary","edu", "empl", "race_binary", "Sex", "OAD", "severity2mid", "pacs_bin2m","ntrad","depression","illness","smoke","OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl","race_binary", "Race", "ntrad","depression","illness", "Sex", "BMI","smoke")
+
+
+d <- read.csv("/Users/yubin/Desktop/Thesis/WTC_data.csv", stringsAsFactors = FALSE)
+d <- d %>%
+  select(all_of(vars_to_keep))
+n <- nrow(d[[1]])
+```
+
+# Data cleaning
+```{r}
+
+library(naniar)
+
+d$empl <- addNA(d$empl)
+d$edu <- addNA(d$edu)
+
+empl_dummies <- model.matrix(~ empl - 1, data = d)
+edu_dummies <- model.matrix(~ edu - 1, data = d)
+smoke_dummies <- model.matrix(~ smoke -1, data =d)
+
+colnames(empl_dummies) <- paste0("empl_", levels(d$empl))
+colnames(edu_dummies)  <- paste0("edu_", levels(d$edu))
+colnames(smoke_dummies)  <- paste0("smoke_", levels(d$smoke))
+
+d <- cbind(d, empl_dummies, edu_dummies, smoke_dummies)
+# Convert depression and illness to factors if they are not already
+d$depression <- as.factor(d$depression)
+d$illness    <- as.factor(d$illness)
+
+# Create dummy variables for depression and illness
+depression_dummies <- model.matrix(~ depression - 1, data = d)
+illness_dummies    <- model.matrix(~ illness - 1, data = d)
+
+# Rename columns for clarity
+colnames(depression_dummies) <- paste0("depression_", levels(d$depression))
+colnames(illness_dummies)    <- paste0("illness_", levels(d$illness))
+
+# Add the new dummy variables to the data frame
+d <- cbind(d, depression_dummies, illness_dummies)
+
+
+```
+
+```{r}
+library(tableone)
+d$BMI <- as.numeric(as.character(d$BMI))
+d$age911_std <- as.numeric(scale(d$age911))
+d$BMI_std <- as.numeric(scale(d$BMI))
+d$weight <- 1
+
+vars <- c("OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl",
+          "race_binary", "ntrad","depression","illness", "Sex", "BMI","smoke")
+
+factorVars <- c("edu", "empl", "race_binary", "Sex", "OAD", "severity2mid", "pacs_bin2m","ntrad","depression","illness","smoke")
+
+d <- d[complete.cases(d[, c("exp4_binary", "OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl", "Race", "Sex", "ntrad", "BMI")]), ]
+
+table1 <- CreateTableOne(vars = vars, 
+                         strata = "exp4_binary", 
+                         data = d, 
+                         factorVars = factorVars)
+
+print(table1, showAllLevels = TRUE)
+```
+
+# parametric multiply robust estimate for NDE and NIE of Exposure - OAD - Severity
+```{r}
+# parametric multiply robust estimate for NDE and NIE #
+Ymodel.lm <- glm(severity2mid ~ (exp4_binary * OAD) +
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99, data=d, family=binomial(link="logit"))
+
+Dmodel_1.pr <- glm(exp4_binary ~ 
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99, data=d, family=binomial(link="logit"))
+
+Dmodel_2.pr <- glm(exp4_binary ~ OAD + 
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99, data=d, family=binomial(link="logit"))
+
+phat_d1_C <- predict(Dmodel_1.pr, type = "response")
+phat_d0_C <- 1-phat_d1_C
+
+phat_d1_CM <- predict(Dmodel_2.pr, type = "response")
+phat_d0_CM <- 1-phat_d1_CM
+
+phat_d1 <- mean(d$exp4_binary)
+phat_d0 <- 1-phat_d1
+
+f1 <- d$exp4_binary*phat_d1 / phat_d1_C
+f2 <- (1-d$exp4_binary)*phat_d0 / phat_d0_C
+f3 <- d$exp4_binary*phat_d0 / phat_d0_C
+
+s1 <- phat_d0_CM / phat_d1_CM
+
+resid <- d$severity2mid - predict(Ymodel.lm, type = "response")
+
+gdata <- d
+
+gdata$exp4_binary <- 1
+qhat1 <- predict(Ymodel.lm, newdata=gdata, type = "response")
+
+gdata$exp4_binary <- 0
+qhat0 <- predict(Ymodel.lm, newdata=gdata, type = "response")
+
+qhat0_CD <- lm(qhat0 ~ exp4_binary +
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99, data=d)
+
+gdata$exp4_binary <- 0
+EMgivC0qhat0 <- predict(qhat0_CD, newdata=gdata)
+
+qhat1_CD <- lm(qhat1 ~ exp4_binary +
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99, data=d)
+
+gdata$exp4_binary <- 1
+EMgivC1qhat1 <- predict(qhat1_CD, newdata=gdata)
+
+gdata$exp4_binary <- 0
+EMgivC0qhat1 <- predict(qhat1_CD, newdata=gdata)
+
+eif_psi_11 <- f1*1*resid + f1*(qhat1 - EMgivC1qhat1) + EMgivC1qhat1
+eif_psi_00 <- f2*1*resid + f2*(qhat0 - EMgivC0qhat0) + EMgivC0qhat0
+eif_psi_10 <- f3*s1*resid + f3*s1*(qhat1 - EMgivC0qhat1) + EMgivC0qhat1
+
+NDEhat <- mean(eif_psi_10 - eif_psi_00)
+NIEhat <- mean(eif_psi_11 - eif_psi_10)
+ATEhat <- mean(eif_psi_11 - eif_psi_00)
+
+VarNDEhat <- var(eif_psi_10 - eif_psi_00)/length(resid)
+VarNIEhat <- var(eif_psi_11 - eif_psi_10)/length(resid)
+VarATEhat <- var(eif_psi_11 - eif_psi_00)/length(resid)
+
+NDE95pctCI <- c(NDEhat-1.96*sqrt(VarNDEhat), NDEhat+1.96*sqrt(VarNDEhat))
+NIE95pctCI <- c(NIEhat-1.96*sqrt(VarNIEhat), NIEhat+1.96*sqrt(VarNIEhat))
+ATE95pctCI <- c(ATEhat-1.96*sqrt(VarATEhat), ATEhat+1.96*sqrt(VarATEhat))
+
+ATEp <- (1-pnorm(abs(ATEhat/sqrt(VarATEhat)),0,1))*2
+NDEp <- (1-pnorm(abs(NDEhat/sqrt(VarNDEhat)),0,1))*2
+NIEp <- (1-pnorm(abs(NIEhat/sqrt(VarNIEhat)),0,1))*2
+
+parMedResults <- data.frame(
+    point.est = round(c(ATEhat, NDEhat, NIEhat), digits = 3),
+    se = round(c(sqrt(VarATEhat), sqrt(VarNDEhat), sqrt(VarNIEhat)), digits = 3),
+    ll.95ci = round(c(ATE95pctCI[1], NDE95pctCI[1], NIE95pctCI[1]), digits = 3),
+    ul.95ci = round(c(ATE95pctCI[2], NDE95pctCI[2], NIE95pctCI[2]), digits = 3),
+    pval = round(c(ATEp, NDEp, NIEp), digits = 3))
+
+rownames(parMedResults) <- c('ATE', 'NDE', 'NIE')
+
+print(parMedResults)
+```
+
+```{r}
+library(SuperLearner)
+set.seed(60615)
+a  <- "exp4_binary"
+y  <- "severity2mid"
+m1 <- c("OAD")
+
+n <- nrow(d)
+d$k <- sample(rep(1:5, length.out=n))
+
+cntrl.sl <- SuperLearner.CV.control(V = 10)
+
+confounders <- c("age911_std", "BMI_std",
+                 "edu_1","edu_2","edu_3","edu_99",
+                 "empl_1","empl_99",
+                 "race_binary","ntrad",
+                 "depression_1","depression_99",
+                 "illness_1","illness_99")
+
+for (j in 1:5) {
+
+	df.train <- d[which(d$k!=j),]
+	df.est <- d[which(d$k==j),]
+
+	Ymodel.sl <- SuperLearner(
+		Y=df.train[,y],
+	    	X=df.train[,c(confounders, a, m1)],
+		family = binomial(),
+	    	SL.library=c("SL.mean", "SL.glmnet", "SL.ranger"),
+		    control    = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+        cvControl  = list(V = 5L, stratifyCV = TRUE, shuffle = TRUE, validRows = NULL))
+
+	Dmodel_1.sl <- SuperLearner(
+		Y=df.train[,a],
+	    	X=df.train[,confounders],
+		family = binomial(),
+	    	SL.library=c("SL.mean", "SL.glmnet", "SL.ranger"),
+		    control    = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+        cvControl  = list(V = 5L, stratifyCV = TRUE, shuffle = TRUE, validRows = NULL))
+
+	Dmodel_2.sl <- SuperLearner(
+		Y=df.train[,a],
+	    	X=df.train[,c(confounders, m1)],
+		family = binomial(),
+	    	SL.library=c("SL.mean", "SL.glmnet", "SL.ranger"),
+		    control    = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+        cvControl  = list(V = 5L, stratifyCV = TRUE, shuffle = TRUE, validRows = NULL))
+	
+	phat_d1_C <- predict(Dmodel_1.sl, 
+		newdata=df.est[,confounders],type="prob")$pred
+	phat_d0_C <- 1-phat_d1_C
+
+	phat_d1_CM <- predict(Dmodel_2.sl, 
+		newdata=df.est[,c(confounders, m1)],type="prob")$pred
+	phat_d0_CM <- 1-phat_d1_CM
+
+	phat_d1 <- mean(df.train$exp4_binary)
+	phat_d0 <- 1-phat_d1
+
+	d$f1[d$k==j] <- d$exp4_binary[d$k==j]*phat_d1 / phat_d1_C
+	d$f2[d$k==j] <- (1-d$exp4_binary[d$k==j])*phat_d0 / phat_d0_C
+	d$f3[d$k==j] <- d$exp4_binary[d$k==j]*phat_d0 / phat_d0_C
+
+	d$s1[d$k==j] <- phat_d0_CM / phat_d1_CM
+
+	d$resid[d$k==j] <- df.est$severity2mid - 
+		predict(Ymodel.sl, df.est[,c(confounders, a, m1)],type = "response")$pred
+
+	gdata <- df.est[,c(confounders, a, m1)]
+
+	gdata$exp4_binary <- 1
+	d$qhat1[d$k==j] <- predict(Ymodel.sl, newdata=gdata,type = "response")$pred
+
+	gdata$exp4_binary <- 0
+	d$qhat0[d$k==j] <- predict(Ymodel.sl, newdata=gdata,type = "response")$pred
+
+  qhat0_CD <- lm(
+    qhat0 ~ exp4_binary +
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99
+    ,
+    data=d[which(d$k==j),]
+  )
+
+	gdata$exp4_binary <- 0
+	d$EMgivC0qhat0[d$k==j] <- predict(qhat0_CD, newdata=gdata, type = "response")
+
+  qhat1_CD <- lm(
+    qhat1 ~ exp4_binary +
+      age911_std + BMI_std +
+      edu_1 + edu_2 + edu_3 + edu_99 +
+      empl_1 + empl_99 +
+      race_binary + ntrad +
+      depression_1 + depression_99 +
+      illness_1 + illness_99,
+    data=d[which(d$k==j),]
+  )
+
+	gdata$exp4_binary <- 1
+	d$EMgivC1qhat1[d$k==j] <- predict(qhat1_CD, newdata=gdata,type = "response")
+
+	gdata$exp4_binary <- 0
+	d$EMgivC0qhat1[d$k==j] <- predict(qhat1_CD, newdata=gdata,type = "response")
+	}
+
+eif_psi_11 <- d$f1*1*d$resid + 
+	d$f1*(d$qhat1 - d$EMgivC1qhat1) + 
+	d$EMgivC1qhat1
+
+eif_psi_00 <- d$f2*1*d$resid + 
+	d$f2*(d$qhat0 - d$EMgivC0qhat0) + 
+	d$EMgivC0qhat0
+
+eif_psi_10 <- d$f3*d$s1*d$resid + 
+	d$f3*d$s1*(d$qhat1 - d$EMgivC0qhat1) + 
+	d$EMgivC0qhat1
+
+NDEhat <- mean(eif_psi_10 - eif_psi_00)
+NIEhat <- mean(eif_psi_11 - eif_psi_10)
+ATEhat <- mean(eif_psi_11 - eif_psi_00)
+
+VarNDEhat <- var(eif_psi_10 - eif_psi_00)/n
+VarNIEhat <- var(eif_psi_11 - eif_psi_10)/n
+VarATEhat <- var(eif_psi_11 - eif_psi_00)/n
+
+NDE95pctCI <- c(NDEhat-1.96*sqrt(VarNDEhat), NDEhat+1.96*sqrt(VarNDEhat))
+NIE95pctCI <- c(NIEhat-1.96*sqrt(VarNIEhat), NIEhat+1.96*sqrt(VarNIEhat))
+ATE95pctCI <- c(ATEhat-1.96*sqrt(VarATEhat), ATEhat+1.96*sqrt(VarATEhat))
+
+ATEp <- (1-pnorm(abs(ATEhat/sqrt(VarATEhat)),0,1))*2
+NDEp <- (1-pnorm(abs(NDEhat/sqrt(VarNDEhat)),0,1))*2
+NIEp <- (1-pnorm(abs(NIEhat/sqrt(VarNIEhat)),0,1))*2
+
+sparMedResults <- data.frame(
+    point.est = round(c(ATEhat, NDEhat, NIEhat), digits = 3),
+    se = round(c(sqrt(VarATEhat), sqrt(VarNDEhat), sqrt(VarNIEhat)), digits = 3),
+    ll.95ci = round(c(ATE95pctCI[1], NDE95pctCI[1], NIE95pctCI[1]), digits = 3),
+    ul.95ci = round(c(ATE95pctCI[2], NDE95pctCI[2], NIE95pctCI[2]), digits = 3),
+    pval = round(c(ATEp, NDEp, NIEp), digits = 3))
+
+rownames(sparMedResults) <- c('ATE', 'NDE', 'NIE')
+
+print(sparMedResults)
+```
+Note: These two model doesn't align with the positive NIE and not included in the final report, might due to misspecification of models.
+
+# ML estimate of robust NIE and NDE of Exposure - OAD - Severity - PASC
+```{r}
+
+##########################################################
+# Formulas for treatment and outcome models
+##########################################################
+set.seed(60615)
+
+a  <- "exp4_binary"
+y  <- "pacs_bin2m"
+m1 <- c("OAD")
+m2 <- c("severity2mid")
+
+library(SuperLearner)
+x <- exprs(
+  age911_std,
+  BMI_std,
+  edu_1, edu_2, edu_3, edu_99,
+  empl_1, empl_99,
+  race_binary,
+  ntrad,
+  depression_1, depression_99,
+  illness_1, illness_99
+) %>% map_chr(as_string)
+
+a0_form <- as.formula(paste(a, " ~ ", paste(x, collapse= "+")))
+a1_form <- as.formula(paste(a, " ~ ", paste(c(x, m1), collapse= "+")))
+a2_form <- as.formula(paste(a, " ~ ", paste(c(x, m1, m2), collapse= "+")))
+
+y0_form <- as.formula(paste(y, " ~ ", paste(c(x, a), collapse= "+")))
+y1_form <- as.formula(paste(y, " ~ ", paste(c(x, a, m1), collapse= "+")))
+y2_form <- as.formula(paste(y, " ~ ", paste(c(x, a, m1, m2), collapse= "+")))
+
+##########################################################
+# Main analyses
+##########################################################
+
+estimands <- expand.grid(c(0, 1), c(0, 1), c(0, 1)) %>%
+  `colnames<-`(c("a1", "a2", "a3"))
+
+I <- 1
+S <- nrow(estimands)
+K <- 5
+
+out <- vector(mode = "list", I)
+
+for(i in 1:I){
+  
+  cat("imputed sample ", i, "\n")
+  
+  df <- d
+  
+  df_p0 <- model.matrix(a0_form, data = df)[, -1] %>% as_tibble()
+  df_p1 <- model.matrix(a1_form, data = df)[, -1] %>% as_tibble()
+  df_p2 <- model.matrix(a2_form, data = df)[, -1] %>% as_tibble()
+  
+  df_mu0 <- model.matrix(y0_form, data = df)[, -1] %>% as_tibble()
+  df_mu1 <- model.matrix(y1_form, data = df)[, -1] %>% as_tibble()
+  df_mu2 <- model.matrix(y2_form, data = df)[, -1] %>% as_tibble()
+  
+  df_mu2n <- model.matrix(y2_form, data = mutate(df, exp4_binary = 0))[, -1] %>% as_tibble()
+  df_mu1n <- model.matrix(y1_form, data = mutate(df, exp4_binary = 0))[, -1] %>% as_tibble()
+  df_mu0n <- model.matrix(y0_form, data = mutate(df, exp4_binary = 0))[, -1] %>% as_tibble()
+  
+  df_mu2y <- model.matrix(y2_form, data = mutate(df, exp4_binary = 1))[, -1] %>% as_tibble()
+  df_mu1y <- model.matrix(y1_form, data = mutate(df, exp4_binary = 1))[, -1] %>% as_tibble()
+  df_mu0y <- model.matrix(y0_form, data = mutate(df, exp4_binary = 1))[, -1] %>% as_tibble()
+    
+  # create cross-fitting split
+  cf_fold <- createFolds(df$pacs_bin2m, K)
+  
+  main_list <- vector(mode = "list", K)
+  
+  for(k in 1:K){
+    
+    cat(" cross-fitting fold ", k, "\n")
+    
+    #################################################
+    # Design matrices for different models
+    #################################################
+    
+    # auxiliary and main data
+    aux <- df[-cf_fold[[k]], ]
+    main <- df[cf_fold[[k]], ]
+    
+    aux_p0 <- df_p0[-cf_fold[[k]], ]
+    aux_p1 <- df_p1[-cf_fold[[k]], ]
+    aux_p2 <- df_p2[-cf_fold[[k]], ]
+    
+    main_p0 <- df_p0[cf_fold[[k]], ]
+    main_p1 <- df_p1[cf_fold[[k]], ]
+    main_p2 <- df_p2[cf_fold[[k]], ]
+    
+    aux_mu0 <- df_mu0[-cf_fold[[k]], ]
+    aux_mu1 <- df_mu1[-cf_fold[[k]], ]
+    aux_mu2 <- df_mu2[-cf_fold[[k]], ]
+    
+    main_mu0 <- df_mu0[cf_fold[[k]], ]
+    main_mu1 <- df_mu1[cf_fold[[k]], ]
+    main_mu2 <- df_mu2[cf_fold[[k]], ]
+    
+    #################################################
+    # Treatment Models
+    #################################################
+    
+    p0_sl <- SuperLearner(
+      Y          = aux$exp4_binary,
+      X          = aux_p0,
+      newX       = df_p0,
+      family     = binomial(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+      cvControl  = list(V = 5L, stratifyCV = TRUE, shuffle = TRUE, validRows = NULL)
+    )
+    
+    p1_sl <- SuperLearner(
+      Y          = aux$exp4_binary,
+      X          = aux_p1,
+      newX       = df_p1,
+      family     = binomial(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+      cvControl  = list(V = 5L, stratifyCV = TRUE, shuffle = TRUE, validRows = NULL)
+    )
+    
+    p2_sl <- SuperLearner(
+      Y          = aux$exp4_binary,
+      X          = aux_p2,
+      newX       = df_p2,
+      family     = binomial(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+      cvControl  = list(V = 5L, stratifyCV = TRUE, shuffle = TRUE, validRows = NULL)
+    )
+    
+    df <- df %>% mutate(
+      p0_fit = p0_sl$SL.predict,
+      p1_fit = p1_sl$SL.predict,
+      p2_fit = p2_sl$SL.predict,
+      w0_n = I(exp4_binary == 0)/(1 - p0_fit),
+      w0_y = I(exp4_binary == 1)/p0_fit,
+      w1_nn = I(exp4_binary == 0)/(1 - p0_fit) * 1,
+      w1_ny = I(exp4_binary == 1)/(1 - p0_fit) * (1 - p1_fit)/p1_fit,
+      w1_yn = I(exp4_binary == 0)/p0_fit * p1_fit/(1 - p1_fit),
+      w1_yy = I(exp4_binary == 1)/p0_fit * 1,
+      w2_000 = I(exp4_binary == 0)/(1 - p0_fit) * 1 * 1,
+      w2_001 = I(exp4_binary == 1)/(1 - p0_fit) * 1 * (1 - p2_fit)/p2_fit,
+      w2_010 = I(exp4_binary == 0)/(1 - p0_fit) * (1 - p1_fit)/p1_fit * p2_fit/(1 - p2_fit),
+      w2_011 = I(exp4_binary == 1)/(1 - p0_fit) * (1 - p1_fit)/p1_fit * 1,
+      w2_100 = I(exp4_binary == 0)/p0_fit * p1_fit/(1 - p1_fit) * 1,
+      w2_101 = I(exp4_binary == 1)/p0_fit * p1_fit/(1 - p1_fit) * (1 - p2_fit)/p2_fit,
+      w2_110 = I(exp4_binary == 0)/p0_fit * 1 * p2_fit/(1 - p2_fit),
+      w2_111 = I(exp4_binary == 1)/p0_fit * 1 * 1,
+    )
+    
+    #################################################
+    # Outcome models
+    #################################################
+    
+    mu2_sl <- SuperLearner(
+      Y          = aux$pacs_bin2m,
+      X          = aux_mu2,
+      family     = binomial(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    df$mu2_fit_a3n <- predict.SuperLearner(mu2_sl, newdata = df_mu2n)$pred
+    df$mu2_fit_a3y <- predict.SuperLearner(mu2_sl, newdata = df_mu2y)$pred
+    
+    mu1_sl_a3n <- SuperLearner(
+      Y          = df$mu2_fit_a3n[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1_sl_a3y <- SuperLearner(
+      Y          = df$mu2_fit_a3y[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    df$mu1_fit_a3n_a2n <- predict.SuperLearner(mu1_sl_a3n, newdata = df_mu1n)$pred
+    df$mu1_fit_a3n_a2y <- predict.SuperLearner(mu1_sl_a3n, newdata = df_mu1y)$pred
+    df$mu1_fit_a3y_a2n <- predict.SuperLearner(mu1_sl_a3y, newdata = df_mu1n)$pred
+    df$mu1_fit_a3y_a2y <- predict.SuperLearner(mu1_sl_a3y, newdata = df_mu1y)$pred
+    
+    mu0_sl_a3n_a2n <- SuperLearner(
+      Y          = df$mu1_fit_a3n_a2n[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0_sl_a3n_a2y <- SuperLearner(
+      Y          = df$mu1_fit_a3n_a2y[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0_sl_a3y_a2n <- SuperLearner(
+      Y          = df$mu1_fit_a3y_a2n[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0_sl_a3y_a2y <- SuperLearner(
+      Y          = df$mu1_fit_a3y_a2y[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    df$mu0_fit_a3n_a2n_a1n <- predict.SuperLearner(mu0_sl_a3n_a2n, newdata = df_mu0n)$pred
+    df$mu0_fit_a3n_a2n_a1y <- predict.SuperLearner(mu0_sl_a3n_a2n, newdata = df_mu0y)$pred
+    
+    df$mu0_fit_a3n_a2y_a1n <- predict.SuperLearner(mu0_sl_a3n_a2y, newdata = df_mu0n)$pred
+    df$mu0_fit_a3n_a2y_a1y <- predict.SuperLearner(mu0_sl_a3n_a2y, newdata = df_mu0y)$pred
+    
+    df$mu0_fit_a3y_a2n_a1n <- predict.SuperLearner(mu0_sl_a3y_a2n, newdata = df_mu0n)$pred
+    df$mu0_fit_a3y_a2n_a1y <- predict.SuperLearner(mu0_sl_a3y_a2n, newdata = df_mu0y)$pred
+    
+    df$mu0_fit_a3y_a2y_a1n <- predict.SuperLearner(mu0_sl_a3y_a2y, newdata = df_mu0n)$pred
+    df$mu0_fit_a3y_a2y_a1y <- predict.SuperLearner(mu0_sl_a3y_a2y, newdata = df_mu0y)$pred
+    
+    #################################################
+    # Targeted MLE
+    #################################################
+    
+    # targeted mu2
+    
+    mu2_tmle_000 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3n))) + w2_000, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_001 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3y))) + w2_001, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_010 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3n))) + w2_010, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_011 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3y))) + w2_011, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_100 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3n))) + w2_100, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_101 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3y))) + w2_101, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_110 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3n))) + w2_110, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    mu2_tmle_111 <- glm(pacs_bin2m ~ 0 + offset(I(qlogis(mu2_fit_a3y))) + w2_111, family = binomial(), weights = weight, data = df[cf_fold[[k]], ])
+    
+    df$mu2b_fit_000 <- predict(mu2_tmle_000, newdata = df, type = "response")
+    df$mu2b_fit_001 <- predict(mu2_tmle_001, newdata = df, type = "response")
+    df$mu2b_fit_010 <- predict(mu2_tmle_010, newdata = df, type = "response")
+    df$mu2b_fit_011 <- predict(mu2_tmle_011, newdata = df, type = "response")
+    df$mu2b_fit_100 <- predict(mu2_tmle_100, newdata = df, type = "response")
+    df$mu2b_fit_101 <- predict(mu2_tmle_101, newdata = df, type = "response")
+    df$mu2b_fit_110 <- predict(mu2_tmle_110, newdata = df, type = "response")
+    df$mu2b_fit_111 <- predict(mu2_tmle_111, newdata = df, type = "response")
+    
+    # refit mu1
+    
+    mu1b_sl_000 <- SuperLearner(
+      Y          = df$mu2b_fit_000[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_001 <- SuperLearner(
+      Y          = df$mu2b_fit_001[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_010 <- SuperLearner(
+      Y          = df$mu2b_fit_010[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_011 <- SuperLearner(
+      Y          = df$mu2b_fit_011[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_100 <- SuperLearner(
+      Y          = df$mu2b_fit_100[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_101 <- SuperLearner(
+      Y          = df$mu2b_fit_101[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_110 <- SuperLearner(
+      Y          = df$mu2b_fit_110[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu1b_sl_111 <- SuperLearner(
+      Y          = df$mu2b_fit_111[-cf_fold[[k]]],
+      X          = aux_mu1,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    df$mu1_fit_000 <- predict.SuperLearner(mu1b_sl_000, newdata = df_mu1n)$pred
+    df$mu1_fit_001 <- predict.SuperLearner(mu1b_sl_001, newdata = df_mu1n)$pred
+    df$mu1_fit_010 <- predict.SuperLearner(mu1b_sl_010, newdata = df_mu1y)$pred
+    df$mu1_fit_011 <- predict.SuperLearner(mu1b_sl_011, newdata = df_mu1y)$pred
+    df$mu1_fit_100 <- predict.SuperLearner(mu1b_sl_100, newdata = df_mu1n)$pred
+    df$mu1_fit_101 <- predict.SuperLearner(mu1b_sl_101, newdata = df_mu1n)$pred
+    df$mu1_fit_110 <- predict.SuperLearner(mu1b_sl_110, newdata = df_mu1y)$pred
+    df$mu1_fit_111 <- predict.SuperLearner(mu1b_sl_111, newdata = df_mu1y)$pred
+    
+    # targeted mu1
+    
+    mu1_tmle_000 <- lm(mu2b_fit_000 ~ 0 + offset(mu1_fit_000) + w1_nn, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_001 <- lm(mu2b_fit_001 ~ 0 + offset(mu1_fit_001) + w1_nn, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_010 <- lm(mu2b_fit_010 ~ 0 + offset(mu1_fit_010) + w1_ny, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_011 <- lm(mu2b_fit_011 ~ 0 + offset(mu1_fit_011) + w1_ny, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_100 <- lm(mu2b_fit_100 ~ 0 + offset(mu1_fit_100) + w1_yn, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_101 <- lm(mu2b_fit_101 ~ 0 + offset(mu1_fit_101) + w1_yn, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_110 <- lm(mu2b_fit_110 ~ 0 + offset(mu1_fit_110) + w1_yy, weights = weight, data = df[cf_fold[[k]], ])
+    mu1_tmle_111 <- lm(mu2b_fit_111 ~ 0 + offset(mu1_fit_111) + w1_yy, weights = weight, data = df[cf_fold[[k]], ])
+    
+    df$mu1b_fit_000 <- predict(mu1_tmle_000, newdata = df)
+    df$mu1b_fit_001 <- predict(mu1_tmle_001, newdata = df)
+    df$mu1b_fit_010 <- predict(mu1_tmle_010, newdata = df)
+    df$mu1b_fit_011 <- predict(mu1_tmle_011, newdata = df)
+    df$mu1b_fit_100 <- predict(mu1_tmle_100, newdata = df)
+    df$mu1b_fit_101 <- predict(mu1_tmle_101, newdata = df)
+    df$mu1b_fit_110 <- predict(mu1_tmle_110, newdata = df)
+    df$mu1b_fit_111 <- predict(mu1_tmle_111, newdata = df)
+    
+    # refit mu0
+    
+    mu0b_sl_000 <- SuperLearner(
+      Y          = df$mu1b_fit_000[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_001 <- SuperLearner(
+      Y          = df$mu1b_fit_001[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_010 <- SuperLearner(
+      Y          = df$mu1b_fit_010[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_011 <- SuperLearner(
+      Y          = df$mu1b_fit_011[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_100 <- SuperLearner(
+      Y          = df$mu1b_fit_100[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_101 <- SuperLearner(
+      Y          = df$mu1b_fit_101[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_110 <- SuperLearner(
+      Y          = df$mu1b_fit_110[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    mu0b_sl_111 <- SuperLearner(
+      Y          = df$mu1b_fit_111[-cf_fold[[k]]],
+      X          = aux_mu0,
+      family     = gaussian(),
+      obsWeights = aux$weight,
+      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger"),
+      control    = list(saveFitLibrary = TRUE),
+      cvControl  = list(V = 5L, shuffle = TRUE, validRows = NULL)
+    )
+    
+    df$mu0_fit_000 <- predict.SuperLearner(mu0b_sl_000, newdata = df_mu0n)$pred
+    df$mu0_fit_001 <- predict.SuperLearner(mu0b_sl_001, newdata = df_mu0n)$pred
+    df$mu0_fit_010 <- predict.SuperLearner(mu0b_sl_010, newdata = df_mu0y)$pred
+    df$mu0_fit_011 <- predict.SuperLearner(mu0b_sl_011, newdata = df_mu0y)$pred
+    df$mu0_fit_100 <- predict.SuperLearner(mu0b_sl_100, newdata = df_mu0n)$pred
+    df$mu0_fit_101 <- predict.SuperLearner(mu0b_sl_101, newdata = df_mu0n)$pred
+    df$mu0_fit_110 <- predict.SuperLearner(mu0b_sl_110, newdata = df_mu0y)$pred
+    df$mu0_fit_111 <- predict.SuperLearner(mu0b_sl_111, newdata = df_mu0y)$pred
+    
+    # targeted mu0
+    
+    mu0_tmle_000 <- lm(mu1b_fit_000 ~ 0 + offset(mu0_fit_000) + w0_n, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_001 <- lm(mu1b_fit_001 ~ 0 + offset(mu0_fit_001) + w0_n, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_010 <- lm(mu1b_fit_010 ~ 0 + offset(mu0_fit_010) + w0_n, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_011 <- lm(mu1b_fit_011 ~ 0 + offset(mu0_fit_011) + w0_n, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_100 <- lm(mu1b_fit_100 ~ 0 + offset(mu0_fit_100) + w0_y, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_101 <- lm(mu1b_fit_101 ~ 0 + offset(mu0_fit_101) + w0_y, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_110 <- lm(mu1b_fit_110 ~ 0 + offset(mu0_fit_110) + w0_y, weights = weight, data = df[cf_fold[[k]], ])
+    mu0_tmle_111 <- lm(mu1b_fit_111 ~ 0 + offset(mu0_fit_111) + w0_y, weights = weight, data = df[cf_fold[[k]], ])
+    
+    df$mu0b_fit_000 <- predict(mu0_tmle_000, newdata = df)
+    df$mu0b_fit_001 <- predict(mu0_tmle_001, newdata = df)
+    df$mu0b_fit_010 <- predict(mu0_tmle_010, newdata = df)
+    df$mu0b_fit_011 <- predict(mu0_tmle_011, newdata = df)
+    df$mu0b_fit_100 <- predict(mu0_tmle_100, newdata = df)
+    df$mu0b_fit_101 <- predict(mu0_tmle_101, newdata = df)
+    df$mu0b_fit_110 <- predict(mu0_tmle_110, newdata = df)
+    df$mu0b_fit_111 <- predict(mu0_tmle_111, newdata = df)
+    
+    main_list[[k]] <- df[cf_fold[[k]], ]
+  }
+  
+  main_df <- reduce(main_list, bind_rows)
+  
+  for (s in 1:S){
+    
+    a1 <- estimands$a1[[s]]
+    a2 <- estimands$a2[[s]]
+    a3 <- estimands$a3[[s]]
+    
+    main_df <- main_df %>%
+      mutate(
+        
+        wt0_deno = a1 * p0_fit + (1 - a1) * (1 - p0_fit),
+        wt1_nume = a1 * p1_fit + (1 - a1) * (1 - p1_fit),
+        wt1_deno = a2 * p1_fit + (1 - a2) * (1 - p1_fit),
+        wt2_nume = a2 * p2_fit + (1 - a2) * (1 - p2_fit),
+        wt2_deno = a3 * p2_fit + (1 - a3) * (1 - p2_fit),
+        
+        !!sym(paste0("w0_", a1, a2, a3)) := 1/trim(wt0_deno),
+        !!sym(paste0("w1_", a1, a2, a3)) := !!sym(paste0("w0_", a1, a2, a3)) * wt1_nume/trim(wt1_deno),
+        !!sym(paste0("w2_", a1, a2, a3)) := !!sym(paste0("w1_", a1, a2, a3)) * wt2_nume/trim(wt2_deno),
+        
+        !!sym(paste0("mu2fit_", a1, a2, a3)) := a3 * mu2_fit_a3y + (1 - a3) * mu2_fit_a3n,
+        
+        !!sym(paste0("mu1fit_", a1, a2, a3)) := a3 * a2 * mu1_fit_a3y_a2y + a3 * (1 - a2) * mu1_fit_a3y_a2n +
+          (1 - a3) * a2 * mu1_fit_a3n_a2y + (1 - a3) * (1 - a2) * mu1_fit_a3n_a2n,
+        
+        !!sym(paste0("mu0fit_", a1, a2, a3)) := a3 * a2 * a1 * mu0_fit_a3y_a2y_a1y + a3 * a2 * (1 - a1) * mu0_fit_a3y_a2y_a1n +
+          a3 * (1 - a2) * a1 * mu0_fit_a3y_a2n_a1y + a3 * (1 - a2) * (1 - a1) * mu0_fit_a3y_a2n_a1n +
+          (1 - a3) * a2 * a1 * mu0_fit_a3n_a2y_a1y + (1 - a3) * a2 * (1 - a1) * mu0_fit_a3n_a2y_a1n +
+          (1 - a3) * (1 - a2) * a1 * mu0_fit_a3n_a2n_a1y + (1 - a3) * (1 - a2) * (1 - a1) * mu0_fit_a3n_a2n_a1n,
+        
+        !!sym(paste0("www_", a1, a2, a3)) := as.double(exp4_binary==a3) * !!sym(paste0("w2_", a1, a2, a3)) * pacs_bin2m,
+        !!sym(paste0("iii_", a1, a2, a3)) := !!sym(paste0("mu0fit_", a1, a2, a3)),
+        !!sym(paste0("eif_", a1, a2, a3)) := as.double(exp4_binary==a3) * !!sym(paste0("w2_", a1, a2, a3)) *
+          (pacs_bin2m - !!sym(paste0("mu2fit_", a1, a2, a3))) +
+          as.double(exp4_binary==a2) * !!sym(paste0("w1_", a1, a2, a3)) * (!!sym(paste0("mu2fit_", a1, a2, a3)) -
+                                                                         !!sym(paste0("mu1fit_", a1, a2, a3))) +
+          as.double(exp4_binary==a1) * !!sym(paste0("w0_", a1, a2, a3)) * (!!sym(paste0("mu1fit_", a1, a2, a3)) -
+                                                                         !!sym(paste0("mu0fit_", a1, a2, a3))) +
+          !!sym(paste0("mu0fit_", a1, a2, a3)),
+        !!sym(paste0("tmle_", a1, a2, a3)) := as.double(exp4_binary==a3) * !!sym(paste0("w2_", a1, a2, a3)) *
+          (pacs_bin2m - !!sym(paste0("mu2b_fit_", a1, a2, a3))) +
+          as.double(exp4_binary==a2) * !!sym(paste0("w1_", a1, a2, a3)) * (!!sym(paste0("mu2b_fit_", a1, a2, a3)) -
+                                                                         !!sym(paste0("mu1b_fit_", a1, a2, a3))) +
+          as.double(exp4_binary==a1) * !!sym(paste0("w0_", a1, a2, a3)) * (!!sym(paste0("mu1b_fit_", a1, a2, a3)) -
+                                                                         !!sym(paste0("mu0b_fit_", a1, a2, a3))) +
+          !!sym(paste0("mu0b_fit_", a1, a2, a3)),
+        !!sym(paste0("tmle2_", a1, a2, a3)) := !!sym(paste0("mu0b_fit_", a1, a2, a3))
+      )
+  }
+  
+  out[[i]] <- main_df
+  
+}
+
+save.image(file = "Result.RData")
+
+```
+
+# Type 2 decomposition
+```{r}
+library(scales)
+load("Result.RData")
+I<-1
+# set my ggplot theme
+mytheme <- theme_minimal(base_size = 18) + 
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5),
+        plot.caption = element_text(color = "grey30"))
+theme_set(mytheme)
+
+out_df <- out %>%
+  imap( ~ mutate(.x, imp = .y)) %>%
+  reduce(bind_rows) %>%
+  mutate(eif_type1_ate = eif_111 - eif_000,
+         eif_type2_ate = eif_111 - eif_000,
+         eif_type3_ate = eif_111 - eif_000,
+         eif_type1_pse3 = eif_001 - eif_000,
+         eif_type1_pse2 = eif_011 - eif_001,
+         eif_type1_pse1 = eif_111 - eif_011,
+         eif_type2_pse1 = eif_100 - eif_000,
+         eif_type2_pse2 = eif_110 - eif_100,
+         eif_type2_pse3 = eif_111 - eif_110,
+         eif_type3_pse3 = eif_001 - eif_000,
+         eif_type3_pse1 = eif_101 - eif_001,
+         eif_type3_pse2 = eif_111 - eif_101,
+         tmle_type1_ate = tmle_111 - tmle_000,
+         tmle_type2_ate = tmle_111 - tmle_000,
+         tmle_type3_ate = tmle_111 - tmle_000,
+         tmle_type1_pse3 = tmle_001 - tmle_000,
+         tmle_type1_pse2 = tmle_011 - tmle_001,
+         tmle_type1_pse1 = tmle_111 - tmle_011,
+         tmle_type2_pse1 = tmle_100 - tmle_000,
+         tmle_type2_pse2 = tmle_110 - tmle_100,
+         tmle_type2_pse3 = tmle_111 - tmle_110,
+         tmle_type3_pse3 = tmle_001 - tmle_000,
+         tmle_type3_pse1 = tmle_101 - tmle_001,
+         tmle_type3_pse2 = tmle_111 - tmle_101) %>%
+  group_by(imp) %>%
+  summarise_at(vars(contains("type")), list(est = ~ wtd.mean(.x, weight),
+                                            se = ~ sqrt(wtd.var(.x, weight)/length(.x)))) %>%
+  ungroup() %>%
+  pivot_longer(-imp) %>%
+  separate(name, into = c("estimator", "type", "estimand", "measure")) %>%
+  pivot_wider(names_from = measure, values_from = value) %>%
+  group_by(estimator, type, estimand) %>%
+  summarise(within_var = mean(se^2),
+            total_var = within_var,
+            est = mean(est),
+            se = sqrt(total_var)) %>%
+  ungroup() %>%
+  filter(type == "type1")   %>%
+  mutate(estimator = factor(estimator,
+                            levels = c("eif", "tmle"),
+                            labels = c(expression(paste("Estimating Equation (", hat(psi)[np]^eif2, ")")),
+                                       expression(paste("TMLE (", hat(psi)[tmle]^eif2, ")")))),
+         estimand = factor(estimand,
+                           levels = rev(c("ate", "pse3", "pse2", "pse1")),
+                           labels = rev(c(expression(paste("Total Effect (", psi[`111`]-psi[`000`], ")")),
+                                          expression(paste("Direct Effect (", psi[`001`]-psi[`000`], ")")),
+                                          expression(paste("via Severity (", psi[`011`]-psi[`001`], ")")),
+                                          expression(paste("via OAD (", psi[`111`]-psi[`011`], ")")))))) 
+
+ggplot(out_df, aes(x = estimand, y = est, shape = estimator)) +
+  geom_pointrange(aes(ymin = est - 1.96 * se,  ymax = est + 1.96 * se),
+                  position = position_dodge(width = - 0.5), size = 1) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  scale_shape("", labels = parse_format()) +
+  scale_color_discrete("", labels = parse_format()) +
+  scale_x_discrete("", labels = parse_format()) +
+  scale_y_continuous("Effects of Exposure on PASC") +
+  coord_flip()
+
+out_df[, c("estimand","est", "se")]
+```
+
+

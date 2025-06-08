@@ -1,0 +1,300 @@
+---
+title: "Final Report Main Analysis"
+author: "Bin Yu"
+---
+
+## Load the data and cleaning
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+library(frequency)
+library(descr)
+library(ggplot2)
+```
+
+
+```{r}
+d <- read.csv("/Users/yubin/Desktop/Thesis/WTC_data.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+library(tableone)
+vars <- c("OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl",
+          "Race", "Sex", "dust_alt", "wtc.arrive.dust3", "wks11_cat")
+
+factorVars <- c("edu", "empl", "Race", "Sex", "dust_alt", "wtc.arrive.dust3", "wks11_cat", 
+                "OAD", "severity2mid", "pacs_bin2m")
+
+table1 <- CreateTableOne(vars = vars, 
+                         strata = "exp4_binary", 
+                         data = d, 
+                         factorVars = factorVars)
+
+print(table1, showAllLevels = TRUE)
+
+```
+
+```{r}
+
+library(naniar)
+
+d$empl <- addNA(d$empl)
+d$edu <- addNA(d$edu)
+
+empl_dummies <- model.matrix(~ empl - 1, data = d)
+edu_dummies <- model.matrix(~ edu - 1, data = d)
+smoke_dummies <- model.matrix(~ smoke -1, data =d)
+
+colnames(empl_dummies) <- paste0("empl_", levels(d$empl))
+colnames(edu_dummies)  <- paste0("edu_", levels(d$edu))
+colnames(smoke_dummies)  <- paste0("smoke_", levels(d$smoke))
+
+d <- cbind(d, empl_dummies, edu_dummies, smoke_dummies)
+# Convert depression and illness to factors if they are not already
+d$depression <- as.factor(d$depression)
+d$illness    <- as.factor(d$illness)
+
+# Create dummy variables for depression and illness
+depression_dummies <- model.matrix(~ depression - 1, data = d)
+illness_dummies    <- model.matrix(~ illness - 1, data = d)
+
+# Rename columns for clarity
+colnames(depression_dummies) <- paste0("depression_", levels(d$depression))
+colnames(illness_dummies)    <- paste0("illness_", levels(d$illness))
+
+# Add the new dummy variables to the data frame
+d <- cbind(d, depression_dummies, illness_dummies)
+```
+
+
+After cleaning the data, show the table 1 again:
+
+```{r}
+library(tableone)
+d$BMI <- as.numeric(as.character(d$BMI))
+
+vars <- c("OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl",
+          "race_binary", "ntrad","depression","illness", "Sex", "BMI","smoke")
+
+factorVars <- c("edu", "empl", "race_binary", "Sex", "OAD", "severity2mid", "pacs_bin2m","ntrad","depression","illness","smoke")
+
+d <- d[complete.cases(d[, c("exp4_binary", "OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl", "Race", "Sex", "ntrad", "BMI")]), ]
+
+table1 <- CreateTableOne(vars = vars, 
+                         strata = "exp4_binary", 
+                         data = d, 
+                         factorVars = factorVars)
+
+print(table1, showAllLevels = TRUE)
+```
+
+---
+
+## Chain Mediation Analysis using the paths Package
+
+In this analysis, we assume the following causal chain:
+  
+\[
+\text{exp4\_binary} \longrightarrow \text{OAD} \longrightarrow \text{severity2mid} \longrightarrow \text{pacs\_bin2m}
+\]
+
+where  
+- **exp4_binary** is the exposure,  
+- **OAD** is the first mediator,  
+- **severity2mid** is the second mediator, and  
+- **pacs_bin2m** is the outcome.  
+
+Covariates include **age911**, **edu_1**, **edu_2**, **edu_3**, **edu_99**, **empl_1**, and **empl_99**.
+
+We will use GLMs to estimate the following models:
+
+1. **Mediator 1 Model (OAD):**
+\[
+\text{logit}\,\Pr\{\text{OAD}=1 \mid \text{exp4\_binary}, C\} = \alpha_0 + \alpha_1\,\text{exp4\_binary} + \gamma_1^\top C,
+\]
+where \( C \) denotes the covariates.
+
+2. **Mediator 2 Model (severity2mid):**
+\[
+\text{logit}\,\Pr\{\text{severity2mid}=1 \mid \text{exp4\_binary}, \text{OAD}, C\} = \beta_0 + \beta_1\,\text{exp4\_binary} + \beta_2\,\text{OAD} + \gamma_2^\top C.
+\]
+
+3. **Outcome Model (pacs\_bin2m):**
+\[
+\text{logit}\,\Pr\{Y=1 \mid \text{exp4\_binary}, \text{OAD}, \text{severity2mid}, C\} = \delta_0 + \delta_1\,\text{exp4\_binary} + \delta_2\,\text{OAD} + \delta_3\,\text{severity2mid} + \gamma_3^\top C.
+\]
+
+Additionally, we fit a propensity score model for the exposure:
+\[
+\text{logit}\,\Pr\{\text{exp4\_binary}=1 \mid C\} = \eta_0 + \eta^\top C.
+\]
+
+The following R code implements these steps using the **paths** package.
+
+# Exposure - OAD - Severity with DxM interaction
+```{r}
+
+set.seed(60615)
+library(paths)
+
+d$age911_std <- as.numeric(scale(d$age911))
+d$BMI_std <- as.numeric(scale(d$BMI))
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("OAD")
+# Define formulas for each GLM
+formula_m0 <- severity2mid ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+# Mediator 1 model: OAD
+formula_m1 <- severity2mid ~ (exp4_binary * OAD) + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+paths_glm <- paths(a = "exp4_binary", y = "severity2mid", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+summary(paths_glm)
+plot(paths_glm)
+```
+```{r}
+sens_paths <- sens(paths_glm, confounded = "M1", estimand = "via M1", gamma_values = - seq(-0.5, 0.5, 0.002), eta_values = seq(-0.5, 0.5, 0.002))
+
+plot(sens_paths)
+```
+
+# Exposure - OAD - Severity without DxM interaction
+```{r}
+set.seed(60615)
+
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("OAD")
+# Define formulas for each GLM
+formula_m0 <- severity2mid ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+# Mediator 1 model: OAD
+formula_m1 <- severity2mid ~ exp4_binary + OAD + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+paths_glm <- paths(a = "exp4_binary", y = "severity2mid", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+summary(paths_glm)
+plot(paths_glm)
+```
+```{r}
+sens_paths <- sens(paths_glm, confounded = "M1", estimand = "via M1", gamma_values = - seq(-0.5, 0.5, 0.002), eta_values = seq(-0.5, 0.5, 0.002))
+
+plot(sens_paths)
+```
+
+
+# Exposure - OAD - Severity - Long COVID with DxM interaction
+```{r, message=FALSE, warning=FALSE}
+
+set.seed(60615)
+
+
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("OAD", "severity2mid")
+# Define formulas for each GLM
+formula_m0 <- pacs_bin2m ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+# Mediator 1 model: OAD
+formula_m1 <- pacs_bin2m ~ (exp4_binary * OAD) + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Mediator 2 model: severity2mid
+formula_m2 <- pacs_bin2m ~ exp4_binary * (OAD + severity2mid) + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std 
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+glm_m2 <- glm(formula_m2, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1, glm_m2)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+
+# Run the causal paths analysis using the paths package.
+# The exposure is 'exp4_binary' and the outcome is 'pacs_bin2m'.
+# We use 1000 bootstrap replicates for inference.
+paths_glm <- paths(a = "exp4_binary", y = "pacs_bin2m", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+summary(paths_glm)
+
+plot(paths_glm)
+```
+```{r}
+sens_paths <- sens(paths_glm, confounded = "M1", estimand = "via M1", gamma_values = - seq(-0.5, 0.5, 0.002), eta_values = seq(-0.5, 0.5, 0.002))
+
+plot(sens_paths)
+```
+
+# Exposure - OAD - Severity - Long COVID without DxM interaction
+```{r, message=FALSE, warning=FALSE}
+
+set.seed(60615)
+library(paths)
+d$age911_std <- as.numeric(scale(d$age911))
+d$BMI_std <- as.numeric(scale(d$BMI))
+
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("OAD", "severity2mid")
+# Define formulas for each GLM
+formula_m0 <- pacs_bin2m ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+# Mediator 1 model: OAD
+formula_m1 <- pacs_bin2m ~ exp4_binary + OAD + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Mediator 2 model: severity2mid
+formula_m2 <- pacs_bin2m ~ exp4_binary + OAD + severity2mid + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std 
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+glm_m2 <- glm(formula_m2, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1, glm_m2)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+
+# Run the causal paths analysis using the paths package.
+# The exposure is 'exp4_binary' and the outcome is 'pacs_bin2m'.
+# We use 1000 bootstrap replicates for inference.
+paths_glm <- paths(a = "exp4_binary", y = "pacs_bin2m", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+summary(paths_glm)
+
+plot(paths_glm)
+```
+```{r}
+sens_paths <- sens(paths_glm, confounded = "M1", estimand = "via M1", gamma_values = - seq(-0.5, 0.5, 0.002), eta_values = seq(-0.5, 0.5, 0.002))
+
+plot(sens_paths)
+```
+
+

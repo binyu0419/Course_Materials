@@ -1,0 +1,235 @@
+---
+title: "hw3"
+author: "Bin Yu"
+date: "2025-05-14"
+output: html_document
+---
+# Question 3
+```{r}
+rm(list=ls())
+
+## load packages  
+packages <- c("dplyr", "tidyr", "foreign", "mediation", 
+              "foreach", "doParallel", "doRNG", "ggplot2", "tableone")
+for (pkg in packages) suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+set.seed(42)
+
+## read  
+jobs <- read.dta("/Users/yubin/Desktop/Thesis/Causal Mediation Analysis/HW2/jobs2.dta")
+
+## clean & ordinal‐code educ/income
+jobs_clean <- jobs %>% 
+  transmute(
+    # treatment & outcome
+    treat     = as.integer(treat     == "exp"),      # 1=workshop
+    job_seek  = as.numeric(job_seek),                # continuous mediator
+    work1     = as.integer(work1     == "psyemp"),   # 1=employed
+
+    # baseline covariates
+    econ_hard = as.numeric(econ_hard),
+    sex       = as.integer(sex),
+    age       = as.numeric(age),
+    nonwhite  = as.integer(nonwhite  == "non.white1"),
+    educ = recode(educ, "lt-hs" = 1, "highsc" = 2, "somcol" = 3, "bach" = 4, "gradwk" = 5),
+		income = recode(income, "lt15k" = 1, "15t24k" = 2, "25t39k" = 3, "40t49k" = 4, "50k+" = 5)
+  )
+
+## check
+glimpse(jobs_clean)
+
+## define covariate set
+C_vars <- c("econ_hard","sex","age","nonwhite","educ","income")
+C_vars
+```
+# Question 4
+```{r}
+source("/Users/yubin/Desktop/Thesis/Causal Mediation Analysis/impcde.R")
+## assume jobs_clean already created with educ & income as single numeric ordinals
+## compute 80th percentile of job_seek
+m0 <- quantile(jobs_clean$job_seek, .8, na.rm=TRUE)
+
+##  linear‐model CDE
+mod_lin <- lm(
+  work1 ~ treat * job_seek + 
+          econ_hard + sex + age + nonwhite + 
+          educ + income,
+  data = jobs_clean
+)
+
+cde_lin <- impcde(
+  data    = jobs_clean,
+  model_y = mod_lin,
+  D       = "treat",
+  M       = "job_seek",
+  d       = 1,
+  dstar   = 0,
+  m       = m0
+)
+
+print(cde_lin)
+
+
+## logit‐model CDE
+mod_log <- glm(
+  work1 ~ treat * job_seek +
+          econ_hard + sex + age + nonwhite + 
+          educ + income,
+  data   = jobs_clean,
+  family = binomial(link = "logit")
+)
+
+cde_log <- impcde(
+  data    = jobs_clean,
+  model_y = mod_log,
+  D       = "treat",
+  M       = "job_seek",
+  d       = 1,
+  dstar   = 0,
+  m       = m0
+)
+
+print(cde_log)
+```
+```{r}
+cde_log_boot <- impcde(
+  data    = jobs_clean,
+  model_y = mod_log,
+  D       = "treat",
+  M       = "job_seek",
+  d       = 1,
+  dstar   = 0,
+  boot    = TRUE,
+  boot_reps = 1000,
+  boot_conf_level = 0.90,
+  boot_seed = 42,
+  m       = m0
+)
+
+tab_cde <- with(cde_log_boot, 
+  data.frame(
+    Estimate    = CDE,
+    `Lower (90%)` = ci_CDE[1],
+    `Upper (90%)` = ci_CDE[2],
+    `p-value`     = pvalue_CDE
+  )
+)
+
+print(tab_cde)
+```
+# Question 7
+```{r}
+rm(list=ls())
+
+packages <- c("dplyr", "tidyr", "foreign", "mediation", 
+              "foreach", "doParallel", "doRNG", "ggplot2", "tableone")
+for (pkg in packages) suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+set.seed(42)
+
+plow <- read.dta("/Users/yubin/Desktop/Thesis/Causal Mediation Analysis/hw3/plowUse.dta")
+```
+
+```{r}
+#  2. define variable names
+D  <- "plow"
+C  <- c("agricultural_suitability",
+        "tropical_climate",
+        "large_animals",
+        "rugged")
+
+plow <- plow %>%
+  drop_na(
+    plow,
+    ln_income,
+    women_politics,
+    agricultural_suitability,
+    tropical_climate,
+    large_animals,
+    rugged,
+    polity2_2000
+  )%>%
+  mutate(
+    std_women_politics = (women_politics - mean(women_politics, na.rm = TRUE)) /
+                         sd(women_politics, na.rm = TRUE)
+  )
+
+Lform <- polity2_2000 ~ plow + (agricultural_suitability +
+                                tropical_climate +
+                                large_animals +
+                                rugged)
+
+Mform <- ln_income ~ plow + (agricultural_suitability +
+                             tropical_climate +
+                             large_animals +
+                             rugged)
+
+Yform <- std_women_politics ~ (ln_income * plow) + (agricultural_suitability +
+                                              tropical_climate +
+                                              large_animals +
+                                              rugged +
+                                              polity2_2000)
+
+
+source("https://raw.githubusercontent.com/causalMedAnalysis/causalMedR/refs/heads/main/utils.R")
+source("https://raw.githubusercontent.com/causalMedAnalysis/causalMedR/refs/heads/main/rwrlite.R")
+
+rwres <- rwrlite(
+  data           = plow,
+  D              = D,
+  C              = C,
+  L_formula_list = list(Lform),
+  M_formula      = Mform,
+  Y_formula      = Yform    # turn off bootstrap
+)
+
+# 7. Extract and display the point estimates
+results <- tibble::tibble(
+  effect   = c("Overall", "IDE", "IIE", "CDE(m=0)"),
+  estimate = c(
+    rwres$OE,
+    rwres$IDE,
+    rwres$IIE,
+    rwres$CDE
+  )
+)
+
+print(results)
+```
+
+# Question 8
+
+```{r}
+#  6. estimate
+rwres <- rwrlite(
+  data            = plow,
+  D               = D,
+  C               = C,
+  L_formula_list  = list(Lform),
+  M_formula       = Mform,
+  Y_formula       = Yform,
+  boot            = TRUE,
+  boot_reps       = 1000,
+  boot_conf_level = 0.95,
+  boot_seed       = 60637,
+  boot_parallel   = TRUE
+)
+
+#  7. tidy up results
+library(tibble)
+res_tbl <- tibble(
+  effect = c("Overall", "IDE", "IIE", "CDE(0)"),
+  estimate = c(rwres$OE, rwres$IDE, rwres$IIE, rwres$CDE),
+  lower95  = c(rwres$ci_OE[1], rwres$ci_IDE[1],
+               rwres$ci_IIE[1], rwres$ci_CDE[1]),
+  upper95  = c(rwres$ci_OE[2], rwres$ci_IDE[2],
+               rwres$ci_IIE[2], rwres$ci_CDE[2]),
+  p_value  = c(rwres$pvalue_OE,
+               rwres$pvalue_IDE,
+               rwres$pvalue_IIE,
+               rwres$pvalue_CDE)
+) %>% 
+  mutate(across(-effect, ~ round(.x, 3)))
+
+print(res_tbl)
+
+```
+

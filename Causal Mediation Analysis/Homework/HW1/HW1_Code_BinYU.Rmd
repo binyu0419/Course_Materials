@@ -1,0 +1,203 @@
+---
+title: "Causal Mediation Analysis Replicatio Code for HW1"
+author: "Bin Yu"
+date: "2025-04-16"
+output: html_document
+---
+
+# Install Packages
+
+```{r}
+rm(list=ls())
+packages<-c("dplyr", "tidyr", "foreign", "margins", "survey")
+
+for (package.i in packages) {
+	suppressPackageStartupMessages(library(package.i, character.only=TRUE))
+}
+```
+
+# Question 3
+
+```{r}
+rm(list = ls())
+library (dagitty)
+
+housingDAG <- dagitty("dag {
+  B -> A
+  C -> A
+  B -> Y
+  C -> Y
+  A -> Y
+}")
+
+plot(housingDAG)
+```
+
+```{r}
+adjustmentSets(housingDAG, "A","Y")
+```
+
+# Question 4
+
+```{r}
+# specify the DAG:
+#  B_i (education) → Y_i (income)
+#  C_i (family size) → Y_i (income)
+#  A_i (voucher assignment, randomized) → Y_i (income)
+#  B_i → D_i (follow‑up success)
+#  A_i → D_i (treatment causes some to move away)
+studyDAG <- dagitty("dag {
+  B -> Y
+  A -> Y
+  B -> D
+  A -> D
+}")
+
+plot(studyDAG)
+
+```
+
+# Question 5
+
+```{r}
+set.seed(42)
+
+nSim <- 10000  # sampling time
+n     <- 500   # sample size
+est    <- numeric(nSim)
+
+true_ATE <- 1
+
+for(s in seq_len(nSim)) {
+
+  U_A <- runif(n)
+  U_B <- runif(n)
+  U_D <- runif(n)
+  U_Y <- rnorm(n)
+  
+
+  A <- as.integer(U_A <= 0.5)
+  B <- as.integer(U_B <= 0.2)
+  D <- as.integer(U_D <= (1 - 0.4*B - 0.2*A))
+  Y <- A + B + U_Y
+  
+  # Conditioned on D = 1
+  yt <- Y[A == 1 & D == 1]
+  yc <- Y[A == 0 & D == 1]
+  est[s] <- mean(yt) - mean(yc)
+}
+
+mean_est <- mean(est)
+sd_est   <- sd(est)
+bias     <- mean_est - true_ATE
+
+cat("After", nSim, "times simulation：\n")
+cat("  mean ATE =", round(mean_est, 3), "\n")
+cat("  std     =", round(sd_est,   3), "\n")
+cat("  bias   =", round(bias,     3), "\n")
+
+```
+
+# Question 6
+
+```{r}
+rm(list = ls())
+
+nsw <- read.dta("/Users/yubin/Desktop/Thesis/Causal Mediation Analysis/nsw.dta")
+
+covariates <- c("age","educ","black","hisp","married","re74","re75")
+
+# imple t‐tests for each covariate
+balance_tests <- lapply(covariates, function(v) {
+  tt <- t.test(as.formula(paste(v, "~ treated")), data = nsw)
+  data.frame(
+    covariate    = v,
+    mean_control = tt$estimate[1],
+    mean_treated = tt$estimate[2],
+    p_value      = tt$p.value
+  )
+})
+balance_df <- do.call(rbind, balance_tests)
+print(balance_df)
+
+# Estimate experimental ATT via unadjusted regression
+att_model <- lm(re78 ~ treated, data = nsw)
+summary(att_model)
+```
+
+# Question 7
+
+```{r}
+
+nsw <- nsw %>% 
+  mutate(
+    ntreated = case_when(
+      sample == "1 NSW" & treated == 1       ~ 1,
+      sample %in% c("2 CPS", "3 PSID")               ~ 0,
+      sample == "1 NSW" & treated == 0       ~ NA
+    )
+  )
+
+non_exp_model <- lm(re78 ~ ntreated, data = nsw)
+summary(non_exp_model)
+
+non_exp_model_1 <- lm(
+  re78 ~ ntreated + age + educ + black + hisp + married + re74 + re75,
+  data = nsw
+)
+summary(non_exp_model_1)
+```
+
+# Estimate by hand:
+```{r}
+treated_data <- nsw %>% filter(ntreated == 1)
+
+treated_data_actual <- treated_data %>% mutate(ntreated = 1)   
+treated_data_counterfactual <- treated_data %>% mutate(ntreated = 0) 
+
+y1_pred <- predict(non_exp_model, newdata = treated_data_actual)
+y0_pred <- predict(non_exp_model, newdata = treated_data_counterfactual)
+
+treated_data$ite <- y1_pred - y0_pred
+att <- mean(treated_data$ite)
+cat("Adjusted Non-Experimental ATT Estimate:", att, "\n")
+```
+
+```{r}
+library(dplyr)
+treated_data <- nsw %>% filter(ntreated == 1)
+
+treated_data_actual <- treated_data %>% mutate(ntreated = 1)  
+treated_data_counterfactual <- treated_data %>% mutate(ntreated = 0) 
+
+y1_pred <- predict(non_exp_model_1, newdata = treated_data_actual)
+y0_pred <- predict(non_exp_model_1, newdata = treated_data_counterfactual)
+
+treated_data$ite <- y1_pred - y0_pred
+att <- mean(treated_data$ite)
+cat("Adjusted Non-Experimental ATT Estimate:", att, "\n")
+```
+
+# Question 8
+
+```{r}
+
+# propensity score predict
+nsw <- nsw %>% filter(!is.na(ntreated))
+ps_model <- glm(
+  ntreated ~ age + educ + black + hisp + married + re74 + re75,
+  data = nsw,
+  family = binomial(link = 'logit')
+)
+
+nsw$pscore <- predict(ps_model, type = "response")
+
+nsw$ipw_att <- with(nsw,
+  ntreated + (1 - ntreated) * (pscore / (1 - pscore))
+)
+
+design_ipw <- svydesign(ids=~1, data=nsw, weights=~ipw_att)
+
+att_ipw <- svyglm(re78 ~ ntreated, design = design_ipw)
+summary(att_ipw)
+```

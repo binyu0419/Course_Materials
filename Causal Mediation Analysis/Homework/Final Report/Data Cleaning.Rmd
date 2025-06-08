@@ -1,0 +1,419 @@
+---
+title: "Cleaning"
+author: "Bin Yu"
+date: "2025-05-02"
+output: html_document
+---
+
+## Load the data and cleaning
+
+```{r}
+rm(list = ls())
+
+```
+
+```{r}
+library(frequency)
+library(descr)
+library(ggplot2)
+load("/Users/yubin/Desktop/Thesis/WTC_COVID-selected/data/merged_main_2024-12-21.RData")
+```
+
+```{r}
+d <- dd
+rm(dd)
+freq(d$Categorization)
+## cleaning / recoding
+# 99 (NA): missing or unable to categorize
+# 0: asymptimatic
+# 1: mild
+# 2: moderate
+# 3: severe
+d$severity = 99
+d$severity[d$Categorization=='Asymptomatic']=0
+d$severity[d$Categorization=='asymptomatic']=0
+d$severity[d$Categorization=='mild']=1
+d$severity[d$Categorization=='Mild']=1
+d$severity[d$Categorization=='moderate']=2
+d$severity[d$Categorization=='Moderate']=2
+d$severity[d$Categorization=='severe']=3
+d$severity[d$Categorization=='Severe']=3
+d$severity[d$Categorization=='SEVERE']=3
+d$severity[d$severity==99] = NA
+# new variable for severity
+freq(d$severity)
+
+```
+
+```{r}
+# 2 severity categories: asymptomatic/mild vs moderate/severe
+## this is the main outcome variable
+d$severity2mid=NA
+d$severity2mid[d$severity<2]=0
+d$severity2mid[d$severity>=2]=1
+freq(d$severity2mid)
+d$severity2mid = as.factor(d$severity2mid)
+```
+
+```{r}
+## Long COVID 
+freq(d$Any.residual.lingering.symptoms.due.to.previous.infection.)
+
+# detailed variable
+d$pacs = 99 # unknown
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='No']=0
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='Less than 4 weeks']=1
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='1-2 months']=2
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='1-2 Months']=2
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='2-6 Months']=3
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='2-6 months']=3
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='2- 6 months']=3
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='6-12 months']=4
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='6-12 Months']=4
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='Greater than 1 year']=5
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='Greater than 2 years']=6
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='Greater than 3 years']=7
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='Greater than 4 years']=7
+
+d$pacs[d$Any.residual.lingering.symptoms.due.to.previous.infection.=='Yes']=8
+
+freq(d$pacs)
+
+d$pacs = as.factor(d$pacs)
+```
+
+```{r}
+# [THIS] binary: long COVID is >2 months, "yes" is "yes" (current definition is 3 months)
+d$pacs_bin2m = 1
+d$pacs_bin2m[d$pacs==0]=0
+d$pacs_bin2m[d$pacs==1]=0
+d$pacs_bin2m[d$pacs==2]=0
+d$pacs_bin2m[d$pacs==99]=NA
+```
+
+```{r}
+freq(d$pacs_bin2m)
+```
+
+```{r}
+
+#####                           WTC exposures                              #####
+# *****************************************************************************#
+
+
+### Aggregate exposure (multi-level) 
+# **************************************
+
+### 4 categories of exposure: from lowest to highest
+freq(d$exp4)
+freq(d$exp4_imputed)
+freq(d$Exp4_Imputed)# use imputed
+#  cleaning / recoding" 0 = low; 1 = intermediate; 2 = high; 3 = very high
+d$exp4_clean = d$exp4_imputed
+freq(d$exp4_clean)
+# make factor variables be factors
+d$exp4_clean = as.factor(d$exp4_clean)
+
+
+
+# exp4_binary: merge 0/1 and 2/3
+d$exp4_binary = NA
+d$exp4_binary[d$exp4_clean==0]=0
+d$exp4_binary[d$exp4_clean==1]=0
+d$exp4_binary[d$exp4_clean==2]=1
+d$exp4_binary[d$exp4_clean==3]=1
+freq(d$exp4_binary)
+
+
+
+
+# exp4_3level: merge 2/3 (high and very high)
+## this is the main variable in the analysis 
+d$exp4_3level = NA
+d$exp4_3level[d$exp4_clean==0]=0
+d$exp4_3level[d$exp4_clean==1]=1
+d$exp4_3level[d$exp4_clean==2]=2
+d$exp4_3level[d$exp4_clean==3]=2
+freq(d$exp4_3level)
+# make factor variables be factors
+d$exp4_3level = as.factor(d$exp4_3level)
+
+
+
+# exp4_exclude: exclude 3 (very high)
+d$exp4_exclude = d$exp4_clean
+d$exp4_exclude[d$exp4_clean==3]=NA
+freq(d$exp4_exclude)
+d$exp4_exclude = as.factor(d$exp4_exclude)
+
+
+
+### Exp5: N=74 re-classified from 'missing' to '1.5' level: doesn't add much
+freq(d$Exp5_Imputed)
+
+```
+
+```{r}
+
+### Arrival time
+# **************************************
+
+### timing of arrival to sites: category: 1 = Sep 11, 2 = Sep 12-13, 3 = Sep 14-30, 4 = Oct 1 and beyond ##
+freq(d$arrival)
+d$wtc.arrive = d$arrival-1
+d$wtc.arrive = as.factor(d$wtc.arrive)
+freq(d$wtc.arrive)
+
+# 3 levels: merge Sep 12-13 and Sept 14-30 in one category
+d$wtc.arrive3 = NA
+d$wtc.arrive3[d$arrival==1] = 0
+d$wtc.arrive3[d$arrival==2] = 1
+d$wtc.arrive3[d$arrival==3] = 1
+d$wtc.arrive3[d$arrival==4] = 2
+d$wtc.arrive3 = as.factor(d$wtc.arrive3)
+freq(d$wtc.arrive3)
+
+# 2 levels: Sep 11 and after Sep 11
+d$wtc.arrive2 = NA
+d$wtc.arrive2[d$arrival==1] = 0
+d$wtc.arrive2[d$arrival==2] = 1
+d$wtc.arrive2[d$arrival==3] = 1
+d$wtc.arrive2[d$arrival==4] = 1
+freq(d$wtc.arrive2)
+d$wtc.arrive2=as.factor(d$wtc.arrive2)
+
+
+# arrival and dust: aggregate
+# category: 1 = Sep 11 in the dust cloud, 2 = Sep 11 not in the dust cloud, 
+# 3 = Sep 12-13, 4 = Sep 14-30, 5 = Oct 1 and beyond
+freq(d$ArrivalDust)
+# freq(d$ArrivalDust2020): adds category 1.5, not needed
+
+d$wtc.arrive.dust3 = NA
+d$wtc.arrive.dust3[d$ArrivalDust==1] = 0
+d$wtc.arrive.dust3[d$ArrivalDust==2] = 1
+d$wtc.arrive.dust3[d$ArrivalDust==3] = 2
+d$wtc.arrive.dust3[d$ArrivalDust==4] = 2
+d$wtc.arrive.dust3[d$ArrivalDust==5] = 3
+d$wtc.arrive.dust3 = as.factor(d$wtc.arrive.dust3)
+freq(d$wtc.arrive.dust3)
+```
+
+```{r}
+### DUST
+# **************************************
+
+# First exposure to the WTC site or rescue/recovery effort whether or not to work/volunteer: 
+# category: 1 = Sep 11 in the dust cloud, 1.5 = Sep 11 unknown dust cloud, 
+# 2 = Sep 11 not in the dust cloud, 3 = Sep 12-13, 4 = Sep 14-30, 5 = Oct 1 and beyond
+freq(d$dustfirstexposure)
+d$dustfirstexposure.f = d$dustfirstexposure-1
+d$dustfirstexposure.f = as.factor(d$dustfirstexposure.f)
+freq(d$dustfirstexposure.f)
+
+
+
+# caught-up in the DUST cloud from the collapse of the World Trade Center buildings
+freq(d$dustc)
+d$dust = d$dustc
+d$dust = as.factor(d$dust)
+d$dust[d$EAQ_08_04==0]=1
+freq(d$dust)
+
+
+# Worst exposure to dust: 
+## 0 = Directly in the cloud of dust from the collapse of the World Trade Center buildings
+## 1 = Exposed to significant amounts of dust but not directly in the cloud of dust from the collapse of the World Trade Center buildings
+## 2 = Exposed to some dust but not in the cloud of dust from the collapse of the World Trade Center buildings
+## 3 = Not exposed to dust and not in the cloud of dust from the collapse of the World Trade Center buildings
+## 4 = Don't know
+table(d$EAQ_08_04, useNA = 'ifany')
+table(d$EAQ_08_04, d$dustc, useNA='ifany')
+
+
+# Alternative measure of dust cloud exposure: binary
+## 1 = In the dust cloud from buildings collapse OR exposed to significant amounts of dust, but not from buildings collapse
+## 0 = Exposed to some dust or not exposed to dust
+d$dust_alt = d$dust
+d$dust_alt[d$EAQ_08_04==0]=1
+d$dust_alt[d$EAQ_08_04==1]=1
+freq(d$dust_alt)
+
+table(d$dustc, d$dust_alt, useNA='ifany')
+
+
+# Alternative measure of dust cloud exposure: 4 categories (doesn't improve compared to dust_alt)
+d$dust_alt4 = 0 # 0 = not exposed to dust
+d$dust_alt4[d$dust==1]=1
+d$dust_alt4[d$EAQ_08_04==0]=1 # Directly in the cloud of dust from the collapse of the World Trade Center buildings
+d$dust_alt4[d$EAQ_08_04==1]=2 # Exposed to significant amounts of dust but not directly in the cloud of dust from the collapse of the World Trade Center buildings
+d$dust_alt4[d$EAQ_08_04==2]=3 # Exposed to some dust but not in the cloud of dust from the collapse of the World Trade Center buildings
+
+d$dust_alt4 = as.factor(d$dust_alt4)
+freq(d$dust_alt4)
+
+```
+
+```{r}
+
+### PILE
+# **************************************
+# ever pile
+freq(d$everpile)
+d$everpile = as.factor(d$everpile)
+
+# pile September
+freq(d$pilesept)
+d$pilesept = as.factor(d$pilesept)
+
+```
+
+```{r}
+
+
+### DURATION of work in the response efforts
+# **************************************
+freq(d$wks11)
+descr(d$wks11)
+hist(d$wks11, breaks=30)
+# categorize wks11
+d$wks11_cat = NA
+d$wks11_cat[d$wks11==0]=0
+d$wks11_cat[d$wks11>0 & d$wks11<5]=1
+d$wks11_cat[d$wks11>=5 & d$wks11<11]=2
+d$wks11_cat[d$wks11>=11]=3
+d$wks11_cat = as.factor(d$wks11_cat)
+freq(d$wks11_cat)
+
+```
+
+```{r}
+
+## INJURY
+# **************************************
+freq(d$any_wtc_injur)
+d$injur = 0
+d$injur[d$any_wtc_injur==1]=1
+freq(d$injur)
+d$injur = as.factor(d$injur)
+
+# injuries to specific organs: skip, too sparse
+freq(d$wtc_injur_head)
+freq(d$wtc_injur_internal)
+freq(d$wtc_injur_25_50)
+freq(d$wtc_injur_mt50)
+
+
+
+### traditional (0) (fire, police, emergency) vs 
+# non-traditional (1) responders (construction workers, news reporters, doctors, etc)
+# **************************************
+freq(d$ntrad)
+d$ntrad = as.factor(d$ntrad)
+
+
+```
+
+```{r}
+
+
+#####                              Demographics                            #####
+# *****************************************************************************#
+
+
+### Education
+freq(d$Education)
+
+d$edu = 99 
+d$edu[d$Education=="Grad/Professional School"] = 0
+d$edu[d$Education=="BA/BS Degree"] = 0
+d$edu[d$Education=="Associate Degree"] = 0
+
+d$edu[d$Education=="Some College"] = 1
+d$edu[d$Education=="Professional School"] = 1 
+d$edu[d$Education=="Technical School"] = 1         
+
+d$edu[d$Education=="High School Grad"] = 2
+
+d$edu[d$Education=="Some High School"] = 3     
+d$edu[d$Education=="Elem School"]=3
+
+d$edu = as.factor(d$edu)
+freq(d$edu)
+
+
+### Employment: most recent before Mar 1 2020
+# Many of these records are very old (10 years before 2020)
+freq(d$WorkStatus.x)
+
+d$empl=99
+d$empl[d$WorkStatus.x=='1 = Working: Full-Time']=0
+d$empl[d$WorkStatus.x=='105 = Sporadic/Seasonal/As Needed']=0
+d$empl[d$WorkStatus.x=='106 = Volunteer']=0
+d$empl[d$WorkStatus.x=='2 = Working: Part-Time']=0
+d$empl[d$WorkStatus.x=='3 = Working: Unknown Amount']=0
+
+
+d$empl[d$WorkStatus.x=='14 = Disabled/Medical Leave: Unknown WTC Relationship, Unknown Work Relationship']=1
+d$empl[d$WorkStatus.x=='15 = Disabled/Medical Leave: Unknown WTC Relationship, Work-Related']=1
+d$empl[d$WorkStatus.x=='4 = Disabled/Medical Leave: WTC-Related, Any Work Relationship']=1
+d$empl[d$WorkStatus.x=='5 = Disabled/Medical Leave: Non-WTC-Related, Unknown Work Relationship']=1
+d$empl[d$WorkStatus.x=='6 = Disabled/Medical Leave: Non-WTC-Related, Work-Related']=1
+d$empl[d$WorkStatus.x=='7 = Disabled/Medical Leave: Non-WTC-Related, Non-Work-Related']=1
+d$empl[d$WorkStatus.x=='8 = Retired']=1
+d$empl[d$WorkStatus.x=='9 = Unemployed']=1
+
+d$empl = as.factor(d$empl)
+freq(d$empl)
+
+# depreesion and illness
+### Recode MHSQ_14_23 and MHSQ_16_21 to depression and illness, respectively
+d$depression <- ifelse(is.na(d$MHSQ_14_23), 99, d$MHSQ_14_23)
+d$illness <- ifelse(is.na(d$MHSQ_16_21), 99, d$MHSQ_16_21)
+d$depression <- ifelse(d$depression %in% c(1,2,3), 1, d$depression)
+# Check frequencies for the recoded variables
+freq(d$depression)
+freq(d$illness)
+```
+```{r}
+# 初始时将所有赋值为 99（默认值）
+d$smoke = 99
+
+# 根据不同的吸烟状态赋予对应的数值
+d$smoke[d$Smoking_Status == "Never smoker"]   = 0
+d$smoke[d$Smoking_Status == "Former smoker"]  = 1
+d$smoke[d$Smoking_Status == "Current smoker"] = 2
+
+# 转换为因子变量
+d$smoke = as.factor(d$smoke)
+
+# 查看频数分布
+freq(d$smoke)
+
+```
+
+```{r}
+### Recode Race to a binary variable: 0 for White, 1 for Nonwhite
+d$race_binary <- ifelse(d$Race == "White", 0, 1)
+# Check frequencies for the new binary race variable
+freq(d$race_binary)
+```
+
+
+```{r}
+d$OAD <- ifelse(!is.na(d$cert_OAD) & d$cert_OAD == "OAD", 1, 0)
+```
+
+```{r}
+# save the data frame `d` to CSV
+write.csv(d, "/Users/yubin/Desktop/Thesis/WTC_data.csv", row.names = FALSE)
+```
+
+

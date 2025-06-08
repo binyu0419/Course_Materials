@@ -1,0 +1,622 @@
+---
+title: "thesis"
+author: "Bin Yu"
+date: "2025-02-01"
+---
+
+## Load the data and cleaning
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+library(frequency)
+library(descr)
+library(ggplot2)
+```
+
+
+```{r}
+d <- read.csv("/Users/yubin/Desktop/Thesis/WTC_data.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+library(tableone)
+vars <- c("OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl",
+          "Race", "Sex", "dust_alt", "wtc.arrive.dust3", "wks11_cat")
+
+factorVars <- c("edu", "empl", "Race", "Sex", "dust_alt", "wtc.arrive.dust3", "wks11_cat", 
+                "OAD", "severity2mid", "pacs_bin2m")
+
+table1 <- CreateTableOne(vars = vars, 
+                         strata = "exp4_binary", 
+                         data = d, 
+                         factorVars = factorVars)
+
+print(table1, showAllLevels = TRUE)
+
+```
+
+```{r}
+
+library(naniar)
+
+d$empl <- addNA(d$empl)
+d$edu <- addNA(d$edu)
+
+empl_dummies <- model.matrix(~ empl - 1, data = d)
+edu_dummies <- model.matrix(~ edu - 1, data = d)
+smoke_dummies <- model.matrix(~ smoke -1, data =d)
+
+colnames(empl_dummies) <- paste0("empl_", levels(d$empl))
+colnames(edu_dummies)  <- paste0("edu_", levels(d$edu))
+colnames(smoke_dummies)  <- paste0("smoke_", levels(d$smoke))
+
+d <- cbind(d, empl_dummies, edu_dummies, smoke_dummies)
+# Convert depression and illness to factors if they are not already
+d$depression <- as.factor(d$depression)
+d$illness    <- as.factor(d$illness)
+
+# Create dummy variables for depression and illness
+depression_dummies <- model.matrix(~ depression - 1, data = d)
+illness_dummies    <- model.matrix(~ illness - 1, data = d)
+
+# Rename columns for clarity
+colnames(depression_dummies) <- paste0("depression_", levels(d$depression))
+colnames(illness_dummies)    <- paste0("illness_", levels(d$illness))
+
+# Add the new dummy variables to the data frame
+d <- cbind(d, depression_dummies, illness_dummies)
+```
+
+
+After cleaning the data, show the table 1 again:
+
+```{r}
+library(tableone)
+d$BMI <- as.numeric(as.character(d$BMI))
+
+vars <- c("OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl",
+          "race_binary", "ntrad","depression","illness", "Sex", "BMI","smoke")
+
+factorVars <- c("edu", "empl", "race_binary", "Sex", "OAD", "severity2mid", "pacs_bin2m","ntrad","depression","illness","smoke")
+
+d <- d[complete.cases(d[, c("exp4_binary", "OAD", "severity2mid", "pacs_bin2m", "age911", "edu", "empl", "Race", "Sex", "ntrad", "BMI")]), ]
+
+table1 <- CreateTableOne(vars = vars, 
+                         strata = "exp4_binary", 
+                         data = d, 
+                         factorVars = factorVars)
+
+print(table1, showAllLevels = TRUE)
+```
+
+Traditional Model:
+
+```{r}
+library(lavaan)
+# Models 
+#   - exp4_binary as exposure
+#   - OAD as the first mediator
+#   - severity2mid as the second mediator
+#   - pacs_bin2m as the results
+#   - age911、edu、empl as the confounders
+model <- '
+  # mediation model 1: OAD predicted by exposure and confounders 
+  OAD ~ a1*exp4_binary + age911 + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99
+
+  # mediation model 2: severity predicted by exposure, confounders and OAD (mediator 1)
+  severity2mid ~ a2*exp4_binary + b1*OAD + age911  + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99
+
+  # results: long covid predicted by exposure, mediators and confounders
+  pacs_bin2m ~ c_prime*exp4_binary + b2*OAD + b3*severity2mid + age911 + edu_1 + edu_2 + edu_3 + edu_99+ empl_1 + empl_99
+
+  # define the mediation effects
+  # chain effect：exp4_binary -> OAD -> severity2mid -> pacs_bin2m
+  ind_chain := a1 * b1 * b3
+
+  # indirect effect for exp4_binary to severity2mid 
+  ind_med2  := a2 * b3
+
+  # indirect effect of exp4_binary to OAD 
+  ind_med1  := a1 * b2
+
+  # Total indirect effect
+  total_ind := ind_chain + ind_med2 + ind_med1
+
+  # Total effect
+  total_effect := c_prime + total_ind
+'
+
+fit <- sem(model,
+           data = d,
+           ordered = c("exp4_binary", "OAD", "severity2mid", "pacs_bin2m"),
+           estimator = "WLSMV")
+
+summary(fit, standardized = TRUE, fit.measures = TRUE)
+```
+
+## Overview
+
+The results were obtained using the `lavaan` package with the DWLS estimator and NLMINB optimization. The model was fitted on 2228 observations after dropping NA in the exposure and outcomes. Overall, the model fit indices indicate a good fit (CFI = 1.000, TLI = 1.000, RMSEA = 0.000, SRMR = 0.000).
+
+## Model Specification
+
+The model is structured in three parts:
+
+1.  **Mediator Model for OAD:**\
+    $$
+    \text{logit}\,\Pr\{ \text{OAD} = 1 \mid X, C \} = a_0 + a_1\, X + \gamma_1^\top C,
+    $$ where $X$ (denoted as `exp4_bn`) is the exposure and $C$ represents covariates (age911, edu, empl, etc.). The estimate $a_1 = 0.286$ (p \< 0.001) indicates that a one-unit increase in $X$ increases the log-odds of OAD by 0.286.
+
+2.  **Mediator Model for Severity2mid:**\
+    $$
+    \text{logit}\,\Pr\{ \text{severity2mid} = 1 \mid X, \text{OAD}, C \} = b_0 + a_2\, X + b_1\, \text{OAD} + \gamma_2^\top C,
+    $$ where the effect of OAD on severity2mid is significant ($b_1 = 0.303$, p \< 0.001), while the direct effect of $X$ ($a_2 = 0.052$) is not significant.
+
+3.  **Outcome Model for pacs_bin2m:**\
+    $$
+    \text{logit}\,\Pr\{ Y = 1 \mid X, \text{OAD}, \text{severity2mid}, C \} = c_0 + c' X + b_2\, \text{OAD} + b_3\, \text{severity2mid} + \gamma_3^\top C.
+    $$ Here, the effect of severity2mid is strong and significant ($b_3 = 0.435$, p \< 0.001), while the direct effect of $X$ (denoted $c'$, estimated as 0.047) is not significant.
+
+## Effect Decomposition
+
+Defined parameters allow us to decompose the total effect of $X$ on $Y$ into indirect and direct components. In our chain mediation model, the chain indirect effect is given by the product: $$
+\text{ind\_chain} = a_1 \times b_1 \times b_3,
+$$ which is estimated as 0.038 (p \< 0.001).
+
+Additionally, we have:
+
+\- **ind_med1 (Indirect effect through OAD alone):** 0.017 (p = 0.138),
+
+\- **ind_med2 (Indirect effect through severity2mid alone):** 0.023 (p = 0.449),
+
+\- **Total Indirect Effect:** 0.077 (p = 0.017),
+
+\- **Total Effect:** 0.124 (p = 0.082).
+
+## Interpretation
+
+-   **Chain Indirect Effect:**\
+    The value of 0.038 indicates that there is a significant sequential (chain) mediation effect. This represents the effect of $X$ on $Y$ transmitted via OAD and then severity2mid: $$
+    \text{Chain Indirect Effect} = a_1 \times b_1 \times b_3 \approx 0.286 \times 0.303 \times 0.435 \approx 0.038.
+    $$
+
+-   **Natural Direct Effect (NDE):**\
+    The direct effect of $X$ on $Y$ (not transmitted through the mediators) is small and not significant ($c' \approx 0.047$, p = 0.502).
+
+-   **Total Effect:**\
+    The overall effect of $X$ on $Y$ is the sum of the direct and indirect effects, estimated as 0.124 (marginally non-significant, p = 0.082). The indirect pathway (combined mediation) plays a substantial role in transmitting the effect of $X$ on $Y$.
+
+## Conclusion
+
+The results support a chain mediation process in which the exposure $X$ influences the outcome $Y$ through its effect on OAD and subsequently on severity2mid. Although the natural direct effect is small, the significant chain indirect effect suggests that the sequential mediation pathway is an important mechanism in this model.
+
+---
+
+## Chain Mediation Analysis using the paths Package
+
+In this analysis, we assume the following causal chain:
+  
+\[
+\text{exp4\_binary} \longrightarrow \text{OAD} \longrightarrow \text{severity2mid} \longrightarrow \text{pacs\_bin2m}
+\]
+
+where  
+- **exp4_binary** is the exposure,  
+- **OAD** is the first mediator,  
+- **severity2mid** is the second mediator, and  
+- **pacs_bin2m** is the outcome.  
+
+Covariates include **age911**, **edu_1**, **edu_2**, **edu_3**, **edu_99**, **empl_1**, and **empl_99**.
+
+We will use GLMs to estimate the following models:
+
+1. **Mediator 1 Model (OAD):**
+\[
+\text{logit}\,\Pr\{\text{OAD}=1 \mid \text{exp4\_binary}, C\} = \alpha_0 + \alpha_1\,\text{exp4\_binary} + \gamma_1^\top C,
+\]
+where \( C \) denotes the covariates.
+
+2. **Mediator 2 Model (severity2mid):**
+\[
+\text{logit}\,\Pr\{\text{severity2mid}=1 \mid \text{exp4\_binary}, \text{OAD}, C\} = \beta_0 + \beta_1\,\text{exp4\_binary} + \beta_2\,\text{OAD} + \gamma_2^\top C.
+\]
+
+3. **Outcome Model (pacs\_bin2m):**
+\[
+\text{logit}\,\Pr\{Y=1 \mid \text{exp4\_binary}, \text{OAD}, \text{severity2mid}, C\} = \delta_0 + \delta_1\,\text{exp4\_binary} + \delta_2\,\text{OAD} + \delta_3\,\text{severity2mid} + \gamma_3^\top C.
+\]
+
+Additionally, we fit a propensity score model for the exposure:
+\[
+\text{logit}\,\Pr\{\text{exp4\_binary}=1 \mid C\} = \eta_0 + \eta^\top C.
+\]
+
+The following R code implements these steps using the **paths** package.
+
+```{r, message=FALSE, warning=FALSE}
+library(paths)
+d$age911_std <- as.numeric(scale(d$age911))
+d$BMI_std <- as.numeric(scale(d$BMI))
+
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("OAD", "severity2mid")
+# Define formulas for each GLM
+formula_m0 <- pacs_bin2m ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+# Mediator 1 model: OAD
+formula_m1 <- pacs_bin2m ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std + OAD
+
+# Mediator 2 model: severity2mid
+formula_m2 <- pacs_bin2m ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std + OAD + severity2mid
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+glm_m2 <- glm(formula_m2, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1, glm_m2)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+
+# Run the causal paths analysis using the paths package.
+# The exposure is 'exp4_binary' and the outcome is 'pacs_bin2m'.
+# We use 1000 bootstrap replicates for inference.
+paths_glm <- paths(a = "exp4_binary", y = "pacs_bin2m", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+# View a summary of the paths analysis results
+summary(paths_glm)
+
+# Optionally, plot sensitivity analyses if desired
+plot(paths_glm)
+```
+```{r}
+#
+glm_base <- glm(
+  pacs_bin2m ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 +
+                empl_1 + empl_99 + race_binary + ntrad +
+                depression_1 + depression_99 + illness_1 + illness_99 +
+                BMI_std + OAD + severity2mid,
+  family = binomial("logit"),
+  data = d
+)
+
+# 
+glm_int_both <- glm(
+  pacs_bin2m ~ exp4_binary * OAD
+             + exp4_binary * severity2mid
+             + age911_std + edu_1 + edu_2 + edu_3 + edu_99
+             + empl_1 + empl_99 + race_binary + ntrad
+             + depression_1 + depression_99 + illness_1 + illness_99
+             + BMI_std,
+  family = binomial("logit"),
+  data = d
+)
+
+# likelihood ratio test
+anova(glm_base, glm_int_both, test = "LRT")
+```
+
+```{r}
+glm_sev_base <- glm(
+  severity2mid ~ exp4_binary          
+                + age911_std           
+                + edu_1 + edu_2 + edu_3 + edu_99  
+                + empl_1 + empl_99     
+                + race_binary          
+                + ntrad               
+                + depression_1 + depression_99  
+                + illness_1 + illness_99  
+                + BMI_std             
+                + OAD         
+  ,
+  family = binomial("logit"),
+  data = d
+)
+
+glm_sev_int <- glm(
+  severity2mid ~ exp4_binary * OAD      # 曝露 × OAD
+                + age911_std
+                + edu_1 + edu_2 + edu_3 + edu_99
+                + empl_1 + empl_99
+                + race_binary
+                + ntrad
+                + depression_1 + depression_99
+                + illness_1 + illness_99
+                + BMI_std
+  ,
+  family = binomial("logit"),
+  data = d
+)
+
+# 似然比检验（LRT）
+anova(glm_sev_base, glm_sev_int, test = "LRT")
+
+```
+
+```{r}
+library(paths)
+
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("OAD")
+# Define formulas for each GLM
+formula_m0 <- severity2mid ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+# Mediator 1 model: OAD
+formula_m1 <- severity2mid ~ exp4_binary + age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std + OAD
+
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911_std + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + race_binary + ntrad + depression_1 + depression_99 + illness_1 + illness_99 + BMI_std
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+paths_glm <- paths(a = "exp4_binary", y = "severity2mid", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+# View a summary of the paths analysis results
+summary(paths_glm)
+
+# Optionally, plot sensitivity analyses if desired
+plot(paths_glm)
+```
+
+```{r}
+# Define the mediators as a list of variable names (chain mediation with two mediators)
+mediators <- list("severity2mid")
+# Define formulas for each GLM
+formula_m0 <- pacs_bin2m ~ exp4_binary + age911 + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99
+# Mediator 1 model: OAD
+formula_m1 <- pacs_bin2m ~ exp4_binary + age911 + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99 + severity2mid
+
+# Propensity score model for the exposure
+formula_ps <- exp4_binary ~ age911 + edu_1 + edu_2 + edu_3 + edu_99 + empl_1 + empl_99
+
+# Fit the GLMs
+glm_m0 <- glm(formula_m0, family = binomial("logit"), data = d)
+glm_m1 <- glm(formula_m1, family = binomial("logit"), data = d)
+
+glm_ymodels <- list(glm_m0, glm_m1)
+
+# Fit the propensity score model
+glm_ps <- glm(formula_ps, family = binomial("logit"), data = d)
+
+# Run the causal paths analysis using the paths package.
+# The exposure is 'exp4_binary' and the outcome is 'pacs_bin2m'.
+# We use 1000 bootstrap replicates for inference.
+paths_glm <- paths(a = "exp4_binary", y = "pacs_bin2m", m = mediators,
+                   glm_ymodels, ps_model = glm_ps, data = d, nboot = 1000)
+
+# View a summary of the paths analysis results
+summary(paths_glm)
+
+# Optionally, plot sensitivity analyses if desired
+plot(paths_glm)
+```
+
+```{r}
+library(medflex)
+vars_needed <- c("pacs_bin2m", "exp4_binary", "OAD", "severity2mid", "age911", "edu", "empl")
+d_clean <- d[complete.cases(d[, vars_needed]), ]
+```
+
+## Chain Mediation Model Using medflex
+
+In this analysis, we examine a chain (sequential) mediation model where the exposure variable, **exp4_binary**, influences the outcome **pacs_bin2m** through two mediators in sequence: **OAD** (mediator 1) and **severity2mid** (mediator 2). In our theoretical model, the causal chain is assumed to be:
+
+$$
+X \longrightarrow M_1 \longrightarrow M_2 \longrightarrow Y,
+$$
+
+where\
+- $X$ is the exposure (exp4_binary),\
+- $M_1$ is the first mediator (OAD),\
+- $M_2$ is the second mediator (severity2mid),\
+- $Y$ is the outcome (pacs_bin2m),\
+- and $C$ represents the covariates (age911, edu, empl).
+
+### Data Expansion
+
+We begin by expanding the dataset using the `neImpute` function from the **medflex** package. The imputation model includes the exposure, the two mediators, their interaction term, and the covariates. The parameter `nMed = 2` indicates that the two variables immediately following the exposure in the formula (i.e., **OAD** and **severity2mid**) are treated as mediators. The imputation model is given by:
+
+$$
+\text{logit}\,\Pr\{Y = 1 \mid X, M_1, M_2, C\} = \alpha_0 + \alpha_1 X + \alpha_2 M_1 + \alpha_3 M_2 + \alpha_4 (M_1 \times M_2) + \gamma^\top C.
+$$
+
+This model allows the interaction between $M_1$ and $M_2$
+
+## Natural Effects Model for Chain Mediation
+
+After data expansion, the **medflex** package generates two counterfactual versions of the exposure: - **exp4_binary0** (denoted as $x^*$): the exposure under the control condition, - **exp4_binary1** (denoted as $x$): the exposure under the treatment condition.
+
+We then fit a natural effects model on the expanded dataset. In the **conditional model** (which adjusts for covariates), the model is specified as:
+
+$$
+\text{logit}\,\Pr\{Y(x, M(x^*))=1 \mid C\} = \beta_0 + \beta_1\, x^* + \beta_2\, x + \beta_3\, (x^* \times x) + \gamma^\top C,
+$$
+
+where:
+
+\- $x^*$ is the counterfactual exposure (corresponding to **exp4_binary0**),
+
+\- $x$ is the actual exposure (corresponding to **exp4_binary1**),
+
+\- $C$ represents the covariates (e.g., **age911**, **edu**, **empl**),
+
+\- $\beta_1$ captures the effect transmitted through the mediators (i.e., the joint or chain indirect effect),
+
+\- $\beta_2$ represents the natural direct effect (NDE) of the exposure on the outcome (i.e., the effect not transmitted through the mediators),
+
+\- $\beta_3$ accounts for any interaction between $x^*$ and $x$, and
+
+\- $\gamma$ is a vector of coefficients for the covariates.
+
+In this formulation, the **total effect (TE)** on the log-odds scale is approximately $\beta_1 + \beta_2$ (plus any contribution from the interaction term, if significant).
+
+For the **marginal model** (without adjusting for covariates), the specification is:
+
+$$
+\text{logit}\,\Pr\{Y(x, M(x^*))=1\} = \beta_0 + \beta_1\, x^* + \beta_2\, x + \beta_3\, (x^* \times x).
+$$
+
+### Effect Decomposition
+
+We further decompose the estimated effects using the `neEffdecomp` function.
+
+This decomposition yields:
+
+\- **Natural Direct Effect (NDE):** The effect of $X$ on $Y$ that is not mediated by the mediators $M_1$ and $M_2$.
+
+\- **Natural Indirect Effect (NIE):** The joint (chain) indirect effect, representing the effect transmitted sequentially through both mediators.
+
+\- **Total Effect (TE):** The overall effect of $X$ on $Y$, which is the sum of the natural direct and joint indirect effects.
+
+------------------------------------------------------------------------
+
+Below is the corresponding R code used to fit these models:
+
+```{r}
+
+# random seed 
+set.seed(23456)
+
+# Step 1: expand the data
+# except for confounders, we also include two mediators and their interaction term:
+impData <- neImpute(
+  pacs_bin2m ~ exp4_binary + OAD + severity2mid + OAD * severity2mid + age911 + edu + empl,
+  family = binomial("logit"),
+  nMed = 2,
+  data = d_clean
+)
+
+
+# Step 2a: Conditional Natural Effects
+
+neMod_joint_cond <- neModel(
+  pacs_bin2m ~ exp4_binary0 * exp4_binary1 + age911 + edu + empl,
+  family = binomial("logit"),
+  expData = impData)
+
+# results
+summary(neMod_joint_cond)
+
+# odds ratio:
+exp(cbind(coef(neMod_joint_cond), confint(neMod_joint_cond)))
+
+# Step 2b: Marginal Natural Effects
+
+neMod_joint_marg <- neModel(
+  pacs_bin2m ~ exp4_binary0 * exp4_binary1,
+  family = binomial("logit"),
+  expData = impData)
+
+# results
+summary(neMod_joint_marg)
+exp(cbind(coef(neMod_joint_marg), confint(neMod_joint_marg)))
+
+# Step 3a: decomposition of effects
+effdecomp_cond <- neEffdecomp(neMod_joint_cond)
+summary(effdecomp_cond)
+# odds ratio
+exp(coef(effdecomp_cond))
+
+# Step 3b: marginal effects
+effdecomp_marg <- neEffdecomp(neMod_joint_marg)
+summary(effdecomp_marg)
+exp(coef(effdecomp_marg))
+```
+
+Since the X-M interaction effect is not significant, try normal model:
+
+```{r}
+
+# expand the data
+impData <- neImpute(
+  pacs_bin2m ~ exp4_binary + OAD + severity2mid + OAD*severity2mid + age911 + edu + empl,
+  family = binomial("logit"),
+  nMed = 2,
+  data = d_clean
+)
+
+# fit the natural effect model
+neMod_joint <- neModel(
+  pacs_bin2m ~ exp4_binary0 + exp4_binary1 + age911 + edu + empl,
+  family = binomial("logit"),
+  expData = impData,
+  se = "bootstrap",
+  nboot = 1000  # 1000 times of bootstrap
+)
+summary(neMod_joint)
+
+# Optionally, convert the estimates to the odds ratio scale:
+exp(cbind(coef(neMod_joint), confint(neMod_joint)))
+# Step 2b: Marginal Natural Effects
+
+neMod_marg <- neModel(
+  pacs_bin2m ~ exp4_binary0 + exp4_binary1,
+  family = binomial("logit"),
+  expData = impData)
+
+# results
+summary(neMod_marg)
+exp(cbind(coef(neMod_marg), confint(neMod_marg)))
+
+# Step 3a: decomposition of effects
+effdecomp_cond <- neEffdecomp(neMod_joint)
+summary(effdecomp_cond)
+# odds ratio
+exp(coef(effdecomp_cond))
+
+# Step 3b: marginal effects
+effdecomp_marg <- neEffdecomp(neMod_marg)
+summary(effdecomp_marg)
+exp(coef(effdecomp_marg))
+
+
+
+```
+
+Also try to use mediation package to do the analysis ( not viable)
+
+```{r}
+library(mediation)
+
+d_clean$exp4_binary <- as.numeric(as.character(d_clean$exp4_binary))
+d_clean$severity2mid <- as.numeric(as.character(d_clean$severity2mid))
+
+fit_M1 <- glm(OAD ~ exp4_binary + age911 + edu + empl,
+              data = d_clean,
+              family = binomial("logit"))
+
+fit_M2 <- glm(severity2mid ~ exp4_binary + OAD + age911 + edu + empl,
+              data = d_clean,
+              family = binomial("logit"))
+
+# exp4_binary -> OAD
+med_out_M1 <- mediate(fit_M1, fit_M2,
+                      treat = "exp4_binary", mediator = "OAD",
+                      sims = 1000)
+summary(med_out_M1)
+
+# 
+fit_Y <- glm(pacs_bin2m ~ exp4_binary + OAD + severity2mid + age911 + edu + empl,
+             data = d_clean,
+             family = binomial("logit"))
+
+med_out_M2 <- mediate(fit_M2, fit_Y,
+                      treat = "exp4_binary", mediator = "severity2mid",
+                      sims = 1000)
+summary(med_out_M2)
+
+chain_ACME <- med_out_M1$d0 * med_out_M2$d0
+chain_ACME
+```
